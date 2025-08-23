@@ -1,0 +1,7 @@
+pymongo==4.8.0
+pandas==2.2.2
+requests==2.32.3
+beautifulsoup4==4.12.3
+scipy==1.13.1
+numpy==1.26.4
+psycopg2-binary==2.9.9

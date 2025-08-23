@@ -1,0 +1,16 @@
+services:
+  - type: worker
+    name: wingo-scraper
+    env: python
+    plan: starter
+    autoDeploy: true
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python -u scraper.py
+    envVars:
+      # Set these in the Render dashboard after creation (do not commit secrets)
+      - key: NEON_CONN_STR
+        value: ""
+      - key: SCRAPE_INTERVAL
+        value: "600"
+      - key: LOG_LEVEL
+        value: INFO
