@@ -15,9 +15,8 @@ on:
         description: "Min agreeing sources"
         required: false
         default: "2"
-  # Uncomment to enable schedule later
-  # schedule:
-  #   - cron: "*/10 * * * *"  # every 10 minutes
+  schedule:
+    - cron: "*/10 * * * *"  # every 10 minutes
 
 concurrency:
   group: analyze-wingo
