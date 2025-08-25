@@ -1,4 +1,4 @@
-import argparse, csv, math, statistics, os
+import argparse, csv, math, statistics, os, json
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timezone
 import pandas as pd
@@ -29,6 +29,132 @@ def load_neon(conn_str: str, limit: int = 1500) -> pd.DataFrame:
     df = pd.read_sql(query, conn)
     conn.close()
     return df.sort_values("period_id")
+
+def log_alert_to_neon(conn_str: str,
+                      anchor_period_id: str,
+                      predicted_color: str,
+                      predicted_number: Optional[int],
+                      color_probs: Dict[str, float],
+                      sources: List[str],
+                      confidence: float,
+                      last300_precision: float,
+                      cycle_len: Optional[int],
+                      cycle_acc: float) -> None:
+    """Create table if missing and insert one alert row. Safe no-op on errors."""
+    try:
+        import psycopg2
+        with psycopg2.connect(conn_str) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS prediction_alerts (
+                        id SERIAL PRIMARY KEY,
+                        anchor_period_id VARCHAR(50) UNIQUE NOT NULL,
+                        predicted_color TEXT NOT NULL,
+                        predicted_number INT,
+                        color_probs JSONB,
+                        sources JSONB,
+                        confidence REAL,
+                        last300_precision REAL,
+                        cycle_len INT,
+                        cycle_acc REAL,
+                        created_at timestamptz DEFAULT now()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    INSERT INTO prediction_alerts (
+                        anchor_period_id, predicted_color, predicted_number,
+                        color_probs, sources, confidence, last300_precision,
+                        cycle_len, cycle_acc
+                    ) VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s)
+                    ON CONFLICT (anchor_period_id) DO NOTHING;
+                    """,
+                    (
+                        str(anchor_period_id), predicted_color, predicted_number,
+                        json.dumps(color_probs), json.dumps(sources), confidence,
+                        last300_precision, (cycle_len if cycle_len is not None else None), cycle_acc,
+                    ),
+                )
+            conn.commit()
+    except Exception:
+        # Intentionally swallow logging errors to not affect alerting
+        pass
+
+def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
+    """Update prediction_alerts with actual outcome from game_history for unresolved rows.
+    Works in the same database; adds outcome columns if missing. Safe no-op on errors.
+    """
+    try:
+        import psycopg2
+        with psycopg2.connect(conn_str) as conn:
+            with conn.cursor() as cur:
+                # Ensure table exists and outcome columns are present
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS prediction_alerts (
+                        id SERIAL PRIMARY KEY,
+                        anchor_period_id VARCHAR(50) UNIQUE NOT NULL,
+                        predicted_color TEXT NOT NULL,
+                        predicted_number INT,
+                        color_probs JSONB,
+                        sources JSONB,
+                        confidence REAL,
+                        last300_precision REAL,
+                        cycle_len INT,
+                        cycle_acc REAL,
+                        created_at timestamptz DEFAULT now()
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE prediction_alerts
+                    ADD COLUMN IF NOT EXISTS outcome_color TEXT,
+                    ADD COLUMN IF NOT EXISTS outcome_number INT,
+                    ADD COLUMN IF NOT EXISTS hit_color BOOLEAN,
+                    ADD COLUMN IF NOT EXISTS hit_number BOOLEAN,
+                    ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
+                    """
+                )
+                # Resolve a batch using the next period in game_history
+                cur.execute(
+                    """
+                    WITH unresolved AS (
+                        SELECT id, anchor_period_id
+                        FROM prediction_alerts
+                        WHERE resolved_at IS NULL
+                        ORDER BY created_at ASC
+                        LIMIT %s
+                    ), next_round AS (
+                        SELECT u.id,
+                               g.number AS outcome_number,
+                               g.color  AS outcome_color
+                        FROM unresolved u
+                        JOIN LATERAL (
+                            SELECT number, color
+                            FROM game_history
+                            WHERE period_id > u.anchor_period_id
+                            ORDER BY period_id
+                            LIMIT 1
+                        ) g ON TRUE
+                    )
+                    UPDATE prediction_alerts p
+                    SET outcome_number = nr.outcome_number,
+                        outcome_color  = nr.outcome_color,
+                        hit_number     = CASE WHEN p.predicted_number IS NOT NULL THEN (p.predicted_number = nr.outcome_number) ELSE NULL END,
+                        hit_color      = (p.predicted_color = nr.outcome_color),
+                        resolved_at    = now()
+                    FROM next_round nr
+                    WHERE p.id = nr.id;
+                    """,
+                    (batch_limit,)
+                )
+            conn.commit()
+    except Exception:
+        # Avoid breaking analysis if resolution fails
+        pass
 
 def color_from_number(n: int) -> str:
     return "VIOLET" if n in (0,5) else ("GREEN" if n % 2 == 0 else "RED")
@@ -184,6 +310,7 @@ def main():
     ap.add_argument("--enable_alert", action="store_true", help="Send Telegram alert when high-confidence signal detected")
     ap.add_argument("--color_prob_threshold", type=float, default=0.62)
     ap.add_argument("--min_sources", type=int, default=2)
+    ap.add_argument("--log_to_db", action="store_true", help="Persist BET alerts to Neon in prediction_alerts table")
     args = ap.parse_args()
 
     if args.source == "csv":
@@ -265,6 +392,26 @@ def main():
         )
         ok = send_telegram(cfg, msg)
         print(f"Alert sent: {ok}")
+        # Optional: persist this alert for later evaluation
+        if args.log_to_db:
+            try:
+                anchor_pid = str(df["period_id"].iloc[-1])
+            except Exception:
+                anchor_pid = str(len(df))
+            log_alert_to_neon(
+                cfg.neon_conn_str,
+                anchor_pid,
+                top_color,
+                int(num_vote) if num_vote is not None else None,
+                {k: float(v) for k,v in color_probs.items()},
+                sig.sources,
+                float(sig.confidence),
+                float(precision),
+                int(cycle_len) if cycle_len else None,
+                float(cycle_acc),
+            )
+            # Also resolve a batch of previous unresolved alerts
+            resolve_unresolved_alerts(cfg.neon_conn_str, batch_limit=200)
     print("=======================")
 
 if __name__ == "__main__":

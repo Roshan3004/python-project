@@ -44,4 +44,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python analyze.py --source db --limit ${{ github.event.inputs.limit }} --enable_alert --color_prob_threshold ${{ github.event.inputs.color_prob_threshold }} --min_sources ${{ github.event.inputs.min_sources }}
+          python analyze.py --source db --limit ${{ github.event.inputs.limit }} --enable_alert --log_to_db --color_prob_threshold ${{ github.event.inputs.color_prob_threshold }} --min_sources ${{ github.event.inputs.min_sources }}
