@@ -1,4 +1,4 @@
-name: Analyze WinGo (Manual)
+name: Analyze WinGo
 
 on:
   workflow_dispatch:
@@ -15,8 +15,12 @@ on:
         description: "Min agreeing sources"
         required: false
         default: "2"
+  # 30-min schedule during awake hours only (IST 09:00–01:30)
+  # IST 09:00 = 03:30 UTC start; run every 30 min until 20:00 UTC (01:30 IST)
   schedule:
-    - cron: "*/10 * * * *"  # every 10 minutes
+    - cron: "30 3 * * *"      # 09:00 IST kickoff
+    - cron: "0,30 4-19 * * *" # 09:30–01:00 IST every 30 min
+    - cron: "0 20 * * *"      # 01:30 IST final run
 
 concurrency:
   group: analyze-wingo
@@ -31,6 +35,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install deps
         run: |
@@ -42,5 +48,8 @@ jobs:
           NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          LIMIT: ${{ github.event.inputs.limit || '20000' }}
+          COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || '0.62' }}
+          MIN_SOURCES: ${{ github.event.inputs.min_sources || '2' }}
         run: |
-          python analyze.py --source db --limit ${{ github.event.inputs.limit }} --enable_alert --log_to_db --color_prob_threshold ${{ github.event.inputs.color_prob_threshold }} --min_sources ${{ github.event.inputs.min_sources }}
+          python analyze.py --source db --limit "$LIMIT" --enable_alert --log_to_db --color_prob_threshold "$COLOR_PROB" --min_sources "$MIN_SOURCES"

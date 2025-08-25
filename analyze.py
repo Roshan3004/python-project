@@ -383,8 +383,18 @@ def main():
         cfg = ScraperConfig()
         top_color = sig.suggestion.replace("BET_", "")
         number_line = f", number={num_vote}" if num_vote is not None else ""
+        # Determine anchor period (latest in DB) and a hint for the next target period
+        try:
+            anchor_pid = str(df["period_id"].iloc[-1])
+        except Exception:
+            anchor_pid = str(len(df))
+        try:
+            target_hint = f", next≈{int(anchor_pid)+1}"
+        except Exception:
+            target_hint = ", next round"
         msg = (
             f"WinGo signal: color={top_color}{number_line}\n"
+            f"anchor={anchor_pid}{target_hint}\n"
             f"probs={{{'RED':round(color_probs.get('RED',0),2), 'GREEN':round(color_probs.get('GREEN',0),2), 'VIOLET':round(color_probs.get('VIOLET',0),2)}}}\n"
             f"confidence={sig.confidence:.2f} | last300_precision={precision:.2f}\n"
             f"cycle={'len='+str(cycle_len)+' acc='+str(round(cycle_acc,2)) if cycle_len else 'none'}\n"
@@ -394,10 +404,6 @@ def main():
         print(f"Alert sent: {ok}")
         # Optional: persist this alert for later evaluation
         if args.log_to_db:
-            try:
-                anchor_pid = str(df["period_id"].iloc[-1])
-            except Exception:
-                anchor_pid = str(len(df))
             log_alert_to_neon(
                 cfg.neon_conn_str,
                 anchor_pid,
