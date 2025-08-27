@@ -1,4 +1,4 @@
-import argparse, csv, math, statistics, os, json
+import argparse, csv, math, statistics, os, json, time
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timezone, timedelta
 import pandas as pd
@@ -30,8 +30,7 @@ def build_markov_size(sizes: List[str], window: int = 300, alpha: float = 1.0) -
     if not sizes:
         return {k:{kk:0.5 for kk in keys} for k in keys}, None
     seq = [s if s in idx else number_to_size(s) for s in sizes][-window:]
-    import numpy as np as _np  # local alias to protect global
-    M = _np.full((2,2), alpha, dtype=float)
+    M = np.full((2,2), alpha, dtype=float)
     for a,b in zip(seq[:-1], seq[1:]):
         if a in idx and b in idx:
             M[idx[a], idx[b]] += 1
@@ -118,6 +117,29 @@ def load_neon(conn_str: str, limit: int = 1500) -> pd.DataFrame:
     df = pd.read_sql(query, conn)
     conn.close()
     return df.sort_values("period_id")
+
+def ensure_fresh_neon_data(cfg: ScraperConfig, limit: int, fresh_seconds: int = 35, max_wait_seconds: int = 30) -> pd.DataFrame:
+    """Reload Neon until the newest row is fresh enough or max wait reached.
+
+    fresh_seconds: how recent the newest scraped_at must be relative to now (UTC)
+    max_wait_seconds: total time to wait/retry before giving up
+    """
+    waited = 0
+    while True:
+        df = load_neon(cfg.neon_conn_str, limit=limit)
+        try:
+            last_ts = pd.to_datetime(df["scraped_at"].iloc[-1], utc=True, errors="coerce")
+        except Exception:
+            last_ts = None
+        now_utc = pd.Timestamp.utcnow()
+        if pd.notna(last_ts):
+            age = (now_utc - last_ts).total_seconds()
+            if age <= fresh_seconds:
+                return df
+        if waited >= max_wait_seconds:
+            return df
+        time.sleep(5)
+        waited += 5
 
 def log_alert_to_neon(conn_str: str,
                       anchor_period_id: str,
@@ -733,16 +755,17 @@ def main():
 
     # Load data
     try:
-    if args.source == "csv":
-        df = load_csv(args.path)
-    else:
-        cfg = ScraperConfig()
-        df = load_neon(cfg.neon_conn_str, limit=args.limit)
+        if args.source == "csv":
+            df = load_csv(args.path)
+        else:
+            cfg = ScraperConfig()
+            # wait for fresh row if scraper is late
+            df = ensure_fresh_neon_data(cfg, limit=args.limit, fresh_seconds=35, max_wait_seconds=30)
 
         if df is None or df.empty:
             print("❌ No data loaded. Check database connection or CSV file.")
             return
-            
+        
         if len(df) < 100:
             print(f"⚠️  Insufficient data: {len(df)} rows. Need at least 100.")
             print("   The system will work better with more historical data.")
@@ -848,11 +871,11 @@ def main():
                 
                 # Log to database if enabled
                 if args.log_to_db:
-        try:
-            anchor_pid = str(df["period_id"].iloc[-1])
-            log_alert_to_neon(
-                cfg.neon_conn_str,
-                anchor_pid,
+                    try:
+                        anchor_pid = str(df["period_id"].iloc[-1])
+                        log_alert_to_neon(
+                            cfg.neon_conn_str,
+                            anchor_pid,
                             signal["color"],
                             None,  # No number prediction in new system
                             signal["probs"],
