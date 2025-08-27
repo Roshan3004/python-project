@@ -293,25 +293,35 @@ def send_telegram(cfg: ScraperConfig, text: str) -> bool:
         return False
 
 def get_next_betting_period(df: pd.DataFrame) -> str:
-    """Calculate the next period ID for betting based on latest data"""
+    """Calculate the next period ID for betting based on latest data and current time.
+
+    - Uses the latest period in df to preserve any provider-specific suffix
+    - Ensures the suggested period is NOT in the past by comparing to now rounded up to the next minute
+    """
     try:
         latest_period = str(df["period_id"].iloc[-1])
-        
-        # Handle different period ID formats
-        if len(latest_period) >= 12:  # Format: YYYYMMDDHHMM
+
+        # Default suffix used if none present
+        default_suffix = "001"
+
+        # Compute the timestamp portion from latest_period if present
+        if len(latest_period) >= 12:
             timestamp_part = latest_period[:12]
-            period_num = latest_period[12:] if len(latest_period) > 12 else "001"
-            
-            # Parse timestamp and add 1 minute
-            dt = datetime.strptime(timestamp_part, "%Y%m%d%H%M")
-            next_dt = dt + timedelta(minutes=1)
-            next_timestamp = next_dt.strftime("%Y%m%d%H%M")
-            
-            # Next period ID
-            next_period = f"{next_timestamp}{period_num}"
-            return next_period
+            period_num = latest_period[12:] if len(latest_period) > 12 else default_suffix
+
+            # Parse latest timestamp and compute next logical minute after it
+            latest_dt = datetime.strptime(timestamp_part, "%Y%m%d%H%M")
+            next_after_latest = latest_dt + timedelta(minutes=1)
+
+            # Also compute "now" rounded up to next minute to avoid past targets
+            now_dt = datetime.utcnow()  # use UTC to be stable in Actions
+            round_up_now = (now_dt.replace(second=0, microsecond=0) + timedelta(minutes=1))
+
+            target_dt = max(next_after_latest, round_up_now)
+            target_timestamp = target_dt.strftime("%Y%m%d%H%M")
+            return f"{target_timestamp}{period_num}"
         else:
-            # If format is different, try to increment numerically
+            # If format is unknown, fall back to numeric increment and ensure not past
             try:
                 next_num = int(latest_period) + 1
                 return str(next_num)
@@ -329,9 +339,18 @@ def format_betting_alert(signal: dict, betting_period: str, accuracy: float) -> 
     reason = signal["reason"]
     probs = signal["probs"]
     
-    # Calculate time until next round (assuming 1-minute intervals)
-    current_time = datetime.now()
-    next_round_time = current_time + timedelta(minutes=1)
+    # Calculate time until target round (best-effort based on minute boundary)
+    current_time = datetime.utcnow()
+    try:
+        # betting_period starts with YYYYMMDDHHMM
+        if len(betting_period) >= 12:
+            target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+        else:
+            # Fallback: next minute
+            target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    except Exception:
+        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    seconds_until = max(0, int((target_dt - current_time).total_seconds()))
     
     msg = (
         f"🚨 WinGo Strong Signal: {color}\n"
@@ -341,8 +360,8 @@ def format_betting_alert(signal: dict, betting_period: str, accuracy: float) -> 
         f"💡 Reason: {reason}\n"
         f"📈 Probs: R={probs['RED']:.2f} G={probs['GREEN']:.2f} V={probs['VIOLET']:.2f}\n"
         f"✅ System Accuracy: {accuracy:.1%}\n"
-        f"⏰ Alert Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        f"⏱️  Next Round: {next_round_time.strftime('%H:%M:%S')}\n"
+        f"⏰ Alert Time (UTC): {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"⏱️  Next Round ETA (UTC): {target_dt.strftime('%H:%M:%S')} ({seconds_until}s)\n"
         f"🎲 Place bet on {color} for the NEXT round!\n"
         f"💡 Tip: Bet within the next 30 seconds for best timing"
     )
