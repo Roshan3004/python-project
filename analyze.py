@@ -556,27 +556,51 @@ def main():
         print()
 
     # Load data
-    if args.source == "csv":
-        df = load_csv(args.path)
-    else:
-        cfg = ScraperConfig()
-        df = load_neon(cfg.neon_conn_str, limit=args.limit)
-    
-    if len(df) < 100:
-        print(f"Insufficient data: {len(df)} rows. Need at least 100.")
+    try:
+        if args.source == "csv":
+            df = load_csv(args.path)
+        else:
+            cfg = ScraperConfig()
+            df = load_neon(cfg.neon_conn_str, limit=args.limit)
+        
+        if df is None or df.empty:
+            print("❌ No data loaded. Check database connection or CSV file.")
+            return
+            
+        if len(df) < 100:
+            print(f"⚠️  Insufficient data: {len(df)} rows. Need at least 100.")
+            print("   The system will work better with more historical data.")
+            if len(df) < 50:
+                print("   Consider waiting for more data before running analysis.")
+                return
+    except Exception as e:
+        print(f"❌ Error loading data: {e}")
+        print("   Check your database connection and credentials.")
         return
     
     print(f"=== WinGo Momentum Analysis ===")
     print(f"Data loaded: {len(df)} rows")
+    print(f"Analysis preset: {args.preset}")
+    print(f"Max signals per run: {args.max_signals}")
+    print(f"Data source: {args.source}")
+    print(f"Data limit: {args.limit}")
+    print()
     
     # Detect strong signals with preset configuration
-    if args.preset != "balanced":
-        # Use preset thresholds
-        preset_config = get_preset_config(args.preset)
-        signals = detect_strong_signals(df, min_confidence=preset_config["momentum"])
-    else:
-        # Use default threshold
-        signals = detect_strong_signals(df, min_confidence=args.color_prob_threshold)
+    try:
+        if args.preset != "balanced":
+            # Use preset thresholds
+            preset_config = get_preset_config(args.preset)
+            if not preset_config:
+                print(f"❌ Invalid preset: {args.preset}")
+                return
+            signals = detect_strong_signals(df, min_confidence=preset_config["momentum"])
+        else:
+            # Use default threshold
+            signals = detect_strong_signals(df, min_confidence=args.color_prob_threshold)
+    except Exception as e:
+        print(f"❌ Error detecting signals: {e}")
+        return
     
     # Limit number of signals per run
     max_signals = min(args.max_signals, get_max_signals_per_run())
@@ -607,8 +631,15 @@ def main():
     if args.enable_alert and signals:
         cfg = ScraperConfig()
         
+        # Determine the correct threshold for alerts
+        if args.preset != "balanced":
+            preset_config = get_preset_config(args.preset)
+            alert_threshold = preset_config["momentum"]
+        else:
+            alert_threshold = args.color_prob_threshold
+            
         for signal in signals:
-            if signal["confidence"] >= args.color_prob_threshold:
+            if signal["confidence"] >= alert_threshold:
                 # Create alert message
                 msg = (
                     f"🚨 WinGo Strong Signal: {signal['color']}\n"
@@ -644,6 +675,12 @@ def main():
                         print(f"Failed to log to database: {e}")
     
     print("\n✅ Analysis complete!")
+    print(f"📊 Summary:")
+    print(f"   - Data analyzed: {len(df)} rounds")
+    print(f"   - Signals detected: {len(signals)}")
+    print(f"   - System accuracy: {accuracy:.1%}")
+    print(f"   - Preset used: {args.preset}")
+    print(f"   - Max signals: {args.max_signals}")
 
 if __name__ == "__main__":
     main()

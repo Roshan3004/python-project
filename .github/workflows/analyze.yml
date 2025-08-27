@@ -52,7 +52,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run momentum analysis with drift detection
+      - name: Run momentum analysis
         env:
           NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -63,9 +63,9 @@ jobs:
         run: |
           echo "🚀 Starting WinGo Momentum Analysis (Preset: $PRESET)"
           python analyze.py \
+            --source db \
             --preset $PRESET \
             --max_signals $MAX_SIGNALS \
             --limit $LIMIT \
             --enable_alert \
-            --enable_drift_check \
             --log_to_db
