@@ -640,15 +640,19 @@ def main():
             
         for signal in signals:
             if signal["confidence"] >= alert_threshold:
-                # Create alert message
+                # Get the latest period ID
+                latest_period = str(df["period_id"].iloc[-1])
+                
+                # Create alert message with period number
                 msg = (
                     f"🚨 WinGo Strong Signal: {signal['color']}\n"
-                    f"Method: {signal['method']}\n"
-                    f"Confidence: {signal['confidence']:.3f}\n"
-                    f"Reason: {signal['reason']}\n"
-                    f"Probs: R={signal['probs']['RED']:.2f} G={signal['probs']['GREEN']:.2f} V={signal['probs']['VIOLET']:.2f}\n"
-                    f"System Accuracy: {accuracy:.1%}\n"
-                    f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"🔢 Period: {latest_period}\n"
+                    f"📊 Method: {signal['method']}\n"
+                    f"🎯 Confidence: {signal['confidence']:.3f}\n"
+                    f"💡 Reason: {signal['reason']}\n"
+                    f"📈 Probs: R={signal['probs']['RED']:.2f} G={signal['probs']['GREEN']:.2f} V={signal['probs']['VIOLET']:.2f}\n"
+                    f"✅ System Accuracy: {accuracy:.1%}\n"
+                    f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
                 
                 # Send Telegram alert
