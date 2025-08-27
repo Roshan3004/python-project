@@ -4,11 +4,11 @@ Tune these parameters to get your desired 7-15 signals per day
 """
 
 # ====== SIGNAL GENERATION THRESHOLDS ======
-# Lower these values to get more signals (but potentially lower accuracy)
-MOMENTUM_CONFIDENCE_THRESHOLD = 0.58      # Default: 0.58 (was 0.65)
-NUMBER_PATTERN_THRESHOLD = 0.60           # Default: 0.60
-TIME_PATTERN_THRESHOLD = 0.62             # Default: 0.62
-ENSEMBLE_THRESHOLD = 0.65                 # Default: 0.65 (ensemble needs higher confidence)
+# Higher thresholds for better signal quality (fewer but stronger signals)
+MOMENTUM_CONFIDENCE_THRESHOLD = 0.65      # Default: 0.65 (increased for quality)
+NUMBER_PATTERN_THRESHOLD = 0.68           # Default: 0.68 (increased for quality)
+TIME_PATTERN_THRESHOLD = 0.65             # Default: 0.65 (increased for quality)
+ENSEMBLE_THRESHOLD = 0.70                 # Default: 0.70 (ensemble needs higher confidence)
 
 # ====== LOOKBACK PERIODS ======
 # Adjust these to change how much historical data is analyzed
@@ -38,10 +38,10 @@ MIN_SOURCES_FOR_ENSEMBLE = 2              # Default: 2 methods must agree
 ENSEMBLE_BONUS_THRESHOLD = 0.05           # Default: 0.05 higher than individual methods
 
 # ====== AGGRESSIVE SIGNAL GENERATION ======
-# Enable this for more frequent signals
-ENABLE_AGGRESSIVE_SIGNALS = True          # Default: True
-AGGRESSIVE_CONFIDENCE_THRESHOLD = 0.55    # Default: 0.55 (lower threshold for secondary signals)
-SECONDARY_SIGNAL_BONUS = 0.05             # Default: 0.05 (lower threshold for secondary)
+# Disabled for better signal quality (fewer but stronger signals)
+ENABLE_AGGRESSIVE_SIGNALS = False         # Default: False (disabled for quality)
+AGGRESSIVE_CONFIDENCE_THRESHOLD = 0.60    # Default: 0.60 (increased for quality)
+SECONDARY_SIGNAL_BONUS = 0.03             # Default: 0.03 (reduced bonus)
 
 # ====== BACKTESTING PARAMETERS ======
 # Adjust these for accuracy estimation
@@ -49,9 +49,9 @@ BACKTEST_LOOKBACK = 300                   # Default: 300 rounds
 BACKTEST_MIN_PREDICTIONS = 50             # Default: 50 minimum predictions for accuracy
 
 # ====== ALERT FREQUENCY CONTROL ======
-# Control how often alerts are sent
-MAX_SIGNALS_PER_ANALYSIS = 5              # Default: 5 maximum signals per analysis run
-MIN_TIME_BETWEEN_ALERTS = 10              # Default: 10 minutes between alerts for same color
+# Control how often alerts are sent (reduced for quality)
+MAX_SIGNALS_PER_ANALYSIS = 3              # Default: 3 maximum signals per analysis run
+MIN_TIME_BETWEEN_ALERTS = 15              # Default: 15 minutes between alerts for same color
 ENABLE_DUPLICATE_ALERTS = False           # Default: False (avoid spam)
 
 # ====== PERFORMANCE TUNING ======
@@ -61,11 +61,11 @@ BATCH_ANALYSIS_SIZE = 100                 # Default: 100 rounds per batch
 ENABLE_CACHING = True                     # Default: True (cache analysis results)
 
 # ====== SIGNAL QUALITY FILTERS ======
-# Additional filters to ensure signal quality
-MIN_SIGNAL_STRENGTH = 0.55                # Default: 0.55 (absolute minimum confidence)
+# Additional filters to ensure signal quality (stricter for better results)
+MIN_SIGNAL_STRENGTH = 0.60                # Default: 0.60 (increased minimum confidence)
 MAX_SIGNAL_STRENGTH = 0.95                # Default: 0.95 (maximum confidence cap)
 ENABLE_VOLATILITY_FILTER = True           # Default: True (filter out volatile periods)
-VOLATILITY_THRESHOLD = 0.15               # Default: 0.15 (maximum allowed volatility)
+VOLATILITY_THRESHOLD = 0.12               # Default: 0.12 (reduced volatility tolerance)
 
 # ====== TELEGRAM ALERT FORMATTING ======
 # Customize alert messages

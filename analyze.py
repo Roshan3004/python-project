@@ -524,189 +524,259 @@ def analyze_color_momentum(df: pd.DataFrame, lookback: int = 20) -> Dict[str, fl
     
     # Calculate momentum scores
     total = len(colors)
-    momentum_scores = {}
-    
+    momentum = {}
     for color in ["RED", "GREEN", "VIOLET"]:
-        # Base frequency
-        freq_score = color_counts[color] / total
+        freq = color_counts[color] / total
         
-        # Streak bonus (consecutive appearances)
-        streak_bonus = 0
-        current_streak = 0
+        # Streak bonus for current color
+        streak = 0
         for c in reversed(colors):
             if c == color:
-                current_streak += 1
-                streak_bonus += 0.05 * current_streak
+                streak += 1
             else:
                 break
         
-        # Recent bias (last 5 rounds)
-        recent_bias = 0
-        last_5 = colors[-5:] if len(colors) >= 5 else colors
-        recent_count = last_5.count(color)
-        if recent_count > 0:
-            recent_bias = 0.1 * recent_count
+        # Bonus increases with streak length (capped at 0.15)
+        streak_bonus = min(0.15, 0.03 * streak)
         
-        # Combine scores
-        momentum_scores[color] = freq_score + streak_bonus + recent_bias
+        # Final momentum score
+        momentum[color] = min(0.95, freq + streak_bonus)
     
-    # Normalize to probabilities
-    total_score = sum(momentum_scores.values())
-    if total_score > 0:
-        return {color: score / total_score for color, score in momentum_scores.items()}
-    else:
-        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+    # Normalize to sum to 1
+    total_momentum = sum(momentum.values())
+    if total_momentum > 0:
+        for color in momentum:
+            momentum[color] /= total_momentum
+    
+    return momentum
 
-def analyze_number_patterns(df: pd.DataFrame, lookback: int = 30) -> Dict[str, float]:
-    """Analyze number patterns for better predictions"""
+def analyze_number_patterns(df: pd.DataFrame, lookback: int = 100) -> Dict[str, float]:
+    """Analyze number patterns to detect under-represented numbers"""
     if len(df) < lookback:
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
     
     recent = df.tail(lookback)
-    numbers = recent["number"].tolist()
+    numbers = recent["number"].astype(int).tolist()
+    colors = recent["color"].tolist()
     
-    # Analyze number distribution
-    number_counts = [0] * 10
+    # Count number frequencies
+    number_counts = {i: 0 for i in range(10)}
     for num in numbers:
         number_counts[num] += 1
     
-    # Find under-represented numbers (potential for correction)
-    avg_count = len(numbers) / 10
-    under_rep = []
-    for i, count in enumerate(number_counts):
-        if count < avg_count * 0.7:  # 30% below average
-            under_rep.append(i)
+    # Find under-represented numbers
+    expected = lookback / 10
+    under_represented = []
+    for num, count in number_counts.items():
+        if count < expected * 0.7:  # 30% below expected
+            under_represented.append(num)
     
-    # Calculate color probabilities based on under-represented numbers
-    red_prob = sum(1 for i in under_rep if i % 2 == 1) / max(len(under_rep), 1)
-    green_prob = sum(1 for i in under_rep if i % 2 == 0 and i not in [0, 5]) / max(len(under_rep), 1)
-    violet_prob = sum(1 for i in under_rep if i in [0, 5]) / max(len(under_rep), 1)
+    if not under_represented:
+        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+    
+    # Map numbers to colors and calculate correction probabilities
+    color_probs = {"RED": 0.0, "GREEN": 0.0, "VIOLET": 0.0}
+    
+    for num in under_represented:
+        if num in [1, 2, 3, 4, 5]:
+            color_probs["RED"] += 1
+        elif num in [6, 7, 8, 9]:
+            color_probs["GREEN"] += 1
+        elif num == 0:
+            color_probs["VIOLET"] += 1
     
     # Normalize
-    total = red_prob + green_prob + violet_prob
+    total = sum(color_probs.values())
     if total > 0:
-        return {
-            "RED": red_prob / total,
-            "GREEN": green_prob / total,
-            "VIOLET": violet_prob / total
-        }
+        for color in color_probs:
+            color_probs[color] /= total
     else:
-        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+        color_probs = {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+    
+    return color_probs
 
-def analyze_time_based_patterns(df: pd.DataFrame) -> Dict[str, float]:
-    """Analyze patterns based on time of day"""
-    if len(df) < 50:
+def analyze_time_based_patterns(df: pd.DataFrame, min_data: int = 200) -> Dict[str, float]:
+    """Analyze time-based patterns (hourly color distributions)"""
+    if len(df) < min_data:
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
     
-    # Add time information
-    df_with_time = df.copy()
-    df_with_time["hour"] = pd.to_datetime(df_with_time["scraped_at"]).dt.hour
-    
-    # Group by hour and analyze color distribution
-    hourly_colors = {}
-    for hour in range(24):
-        hour_data = df_with_time[df_with_time["hour"] == hour]
-        if len(hour_data) >= 10:  # Need sufficient data
-            colors = hour_data["color"].tolist()
-            hourly_colors[hour] = {
-                "RED": colors.count("RED") / len(colors),
-                "GREEN": colors.count("GREEN") / len(colors),
-                "VIOLET": colors.count("VIOLET") / len(colors)
-            }
+    # Add hour column
+    df_copy = df.copy()
+    df_copy["hour"] = pd.to_datetime(df_copy["scraped_at"]).dt.hour
     
     # Get current hour
-    current_hour = datetime.now().hour
+    current_hour = datetime.utcnow().hour
     
-    # Find similar hours (within 2 hours)
-    similar_hours = []
-    for hour in hourly_colors:
-        if abs(hour - current_hour) <= 2:
-            similar_hours.append(hour)
+    # Find data for current hour
+    hour_data = df_copy[df_copy["hour"] == current_hour]
     
-    if similar_hours:
-        # Average probabilities from similar hours
-        avg_probs = {"RED": 0, "GREEN": 0, "VIOLET": 0}
-        for hour in similar_hours:
-            for color in ["RED", "GREEN", "VIOLET"]:
-                avg_probs[color] += hourly_colors[hour][color]
-        
-        # Normalize
-        total = sum(avg_probs.values())
-        if total > 0:
-            return {color: prob / total for color, prob in avg_probs.items()}
+    if len(hour_data) < 20:  # Need at least 20 data points for this hour
+        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
     
-    return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+    # Calculate hourly color distribution
+    color_counts = hour_data["color"].value_counts()
+    total = len(hour_data)
+    
+    probs = {}
+    for color in ["RED", "GREEN", "VIOLET"]:
+        count = color_counts.get(color, 0)
+        probs[color] = count / total
+    
+    return probs
 
-def detect_strong_signals(df: pd.DataFrame, min_confidence: float = 0.65) -> List[Dict]:
+def detect_strong_signals(df: pd.DataFrame, 
+                         momentum_threshold: float = 0.6,
+                         pattern_threshold: float = 0.65,
+                         time_threshold: float = 0.6,
+                         ensemble_threshold: float = 0.7) -> List[Dict]:
     """Detect strong signals using multiple analysis methods"""
     signals = []
     
-    # Method 1: Color Momentum
-    momentum_probs = analyze_color_momentum(df, lookback=25)
-    momentum_confidence = max(momentum_probs.values())
-    if momentum_confidence >= min_confidence:
-        top_color = max(momentum_probs, key=momentum_probs.get)
+    # 1. Color Momentum Analysis
+    momentum_probs = analyze_color_momentum(df)
+    max_momentum = max(momentum_probs.values())
+    if max_momentum >= momentum_threshold:
+        best_color = max(momentum_probs, key=momentum_probs.get)
         signals.append({
-            "method": "Momentum",
-            "color": top_color,
-            "confidence": momentum_confidence,
-            "probs": momentum_probs,
-            "reason": f"Strong {top_color} momentum with {momentum_confidence:.2f} confidence"
+            "type": "color",
+            "color": best_color,
+            "confidence": max_momentum,
+            "method": "ColorMomentum",
+            "reason": f"Color momentum suggests {best_color} with {max_momentum:.3f} confidence",
+            "probs": momentum_probs
         })
     
-    # Method 2: Number Pattern Correction
-    number_probs = analyze_number_patterns(df, lookback=35)
-    number_confidence = max(number_probs.values())
-    if number_confidence >= min_confidence:
-        top_color = max(number_probs, key=number_probs.get)
+    # 2. Number Pattern Analysis
+    pattern_probs = analyze_number_patterns(df)
+    max_pattern = max(pattern_probs.values())
+    if max_pattern >= pattern_threshold:
+        best_color = max(pattern_probs, key=pattern_probs.get)
         signals.append({
+            "type": "color",
+            "color": best_color,
+            "confidence": max_pattern,
             "method": "NumberPattern",
-            "color": top_color,
-            "confidence": number_confidence,
-            "probs": number_probs,
-            "reason": f"Number pattern suggests {top_color} correction with {number_confidence:.2f} confidence"
+            "reason": f"Number pattern suggests {best_color} correction with {max_pattern:.3f} confidence",
+            "probs": pattern_probs
         })
     
-    # Method 3: Time-based Patterns
+    # 3. Time-based Pattern Analysis
     time_probs = analyze_time_based_patterns(df)
-    time_confidence = max(time_probs.values())
-    if time_confidence >= min_confidence:
-        top_color = max(time_probs, key=time_probs.get)
+    max_time = max(time_probs.values())
+    if max_time >= time_threshold:
+        best_color = max(time_probs, key=time_probs.get)
         signals.append({
+            "type": "color",
+            "color": best_color,
+            "confidence": max_time,
             "method": "TimePattern",
-            "color": top_color,
-            "confidence": time_confidence,
-            "probs": time_probs,
-            "reason": f"Time-based pattern favors {top_color} with {time_confidence:.2f} confidence"
+            "reason": f"Time pattern suggests {best_color} bias with {max_time:.3f} confidence",
+            "probs": time_probs
         })
     
-    # Method 4: Combined Analysis (ensemble)
-    if len(signals) >= 2:
-        # Combine probabilities from multiple methods
-        combined_probs = {"RED": 0, "GREEN": 0, "VIOLET": 0}
-        total_weight = 0
-        
-        for signal in signals:
-            weight = signal["confidence"]
-            for color, prob in signal["probs"].items():
-                combined_probs[color] += prob * weight
-            total_weight += weight
-        
-        if total_weight > 0:
-            combined_probs = {color: prob / total_weight for color, prob in combined_probs.items()}
-            combined_confidence = max(combined_probs.values())
+    # 4. Big/Small Analysis
+    size_probs, size_conf, size_reason = analyze_big_small(df)
+    if size_conf >= 0.65:  # Higher threshold for size predictions
+        best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
+        signals.append({
+            "type": "size",
+            "size": best_size,
+            "confidence": size_conf,
+            "method": "BigSmall",
+            "reason": f"Size analysis suggests {best_size} with {size_conf:.3f} confidence",
+            "probs": size_probs
+        })
+    
+    # 5. Ensemble Analysis - if multiple methods agree
+    color_signals = [s for s in signals if s["type"] == "color"]
+    if len(color_signals) >= 2:
+        # Check if multiple methods predict the same color
+        color_predictions = [s["color"] for s in color_signals]
+        if len(set(color_predictions)) == 1:  # All predict same color
+            best_color = color_predictions[0]
+            avg_confidence = sum(s["confidence"] for s in color_signals) / len(color_signals)
             
-            if combined_confidence >= min_confidence + 0.05:  # Higher threshold for ensemble
-                top_color = max(combined_probs, key=combined_probs.get)
+            if avg_confidence >= ensemble_threshold:
                 signals.append({
+                    "type": "color",
+                    "color": best_color,
+                    "confidence": avg_confidence,
                     "method": "Ensemble",
-                    "color": top_color,
-                    "confidence": combined_confidence,
-                    "probs": combined_probs,
-                    "reason": f"Multiple methods agree on {top_color} with {combined_confidence:.2f} confidence"
+                    "reason": f"Multiple methods agree on {best_color} with {avg_confidence:.3f} avg confidence",
+                    "probs": momentum_probs  # Use momentum probs as base
                 })
     
     return signals
+
+def format_color_alert(signal: dict, betting_period: str, accuracy: float) -> str:
+    """Format a color betting alert message"""
+    color = signal["color"]
+    method = signal["method"]
+    confidence = signal["confidence"]
+    reason = signal["reason"]
+    probs = signal["probs"]
+    
+    # Calculate time until target round
+    current_time = datetime.utcnow()
+    try:
+        if len(betting_period) >= 12:
+            target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+        else:
+            target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    except Exception:
+        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    seconds_until = max(0, int((target_dt - current_time).total_seconds()))
+    
+    msg = (
+        f"🎨 WinGo Color Signal: {color}\n"
+        f"🔢 Bet on Period: {betting_period}\n"
+        f"📊 Method: {method}\n"
+        f"🎯 Confidence: {confidence:.3f}\n"
+        f"💡 Reason: {reason}\n"
+        f"📈 Probs: R={probs['RED']:.2f} G={probs['GREEN']:.2f} V={probs['VIOLET']:.2f}\n"
+        f"✅ System Accuracy: {accuracy:.1%}\n"
+        f"⏰ Alert Time (UTC): {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"⏱️  Next Round ETA (UTC): {target_dt.strftime('%H:%M:%S')} ({seconds_until}s)\n"
+        f"🎲 Place bet on {color} for the NEXT round!\n"
+        f"💡 Tip: Bet within the next 30 seconds for best timing"
+    )
+    
+    return msg
+
+def format_size_alert(signal: dict, betting_period: str, accuracy: float) -> str:
+    """Format a size betting alert message"""
+    size = signal["size"]
+    method = signal["method"]
+    confidence = signal["confidence"]
+    reason = signal["reason"]
+    probs = signal["probs"]
+    
+    # Calculate time until target round
+    current_time = datetime.utcnow()
+    try:
+        if len(betting_period) >= 12:
+            target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+        else:
+            target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    except Exception:
+        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    seconds_until = max(0, int((target_dt - current_time).total_seconds()))
+    
+    msg = (
+        f"⚖️  WinGo Size Signal: {size}\n"
+        f"🔢 Bet on Period: {betting_period}\n"
+        f"📊 Method: {method}\n"
+        f"🎯 Confidence: {confidence:.3f}\n"
+        f"💡 Reason: {reason}\n"
+        f"📈 Probs: BIG={probs['BIG']:.2f} SMALL={probs['SMALL']:.2f}\n"
+        f"✅ System Accuracy: {accuracy:.1%}\n"
+        f"⏰ Alert Time (UTC): {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"⏱️  Next Round ETA (UTC): {target_dt.strftime('%H:%M:%S')} ({seconds_until}s)\n"
+        f"🎲 Place bet on {size} for the NEXT round!\n"
+        f"💡 Tip: Bet within the next 30 seconds for best timing"
+    )
+    
+    return msg
 
 def backtest_momentum_system(df: pd.DataFrame, lookback: int = 300) -> float:
     """Backtest the momentum system to estimate accuracy"""
@@ -793,10 +863,18 @@ def main():
             if not preset_config:
                 print(f"❌ Invalid preset: {args.preset}")
                 return
-            signals = detect_strong_signals(df, min_confidence=preset_config["momentum"])
+            signals = detect_strong_signals(df, 
+                                            momentum_threshold=preset_config["momentum"],
+                                            pattern_threshold=preset_config["number_pattern"],
+                                            time_threshold=preset_config["time_pattern"],
+                                            ensemble_threshold=preset_config["ensemble"])
         else:
             # Use default threshold
-            signals = detect_strong_signals(df, min_confidence=args.color_prob_threshold)
+            signals = detect_strong_signals(df, 
+                                            momentum_threshold=args.color_prob_threshold,
+                                            pattern_threshold=0.65, # Default for number pattern
+                                            time_threshold=0.6,   # Default for time pattern
+                                            ensemble_threshold=0.7) # Default for ensemble
     except Exception as e:
         print(f"❌ Error detecting signals: {e}")
         return
@@ -816,11 +894,18 @@ def main():
     # Display signals
     print(f"\n🎯 Strong Signals Detected: {len(signals)}")
     for i, signal in enumerate(signals, 1):
-        print(f"\nSignal {i}: {signal['method']}")
-        print(f"  Color: {signal['color']}")
-        print(f"  Confidence: {signal['confidence']:.3f}")
-        print(f"  Reason: {signal['reason']}")
-        print(f"  Probabilities: RED={signal['probs']['RED']:.3f}, GREEN={signal['probs']['GREEN']:.3f}, VIOLET={signal['probs']['VIOLET']:.3f}")
+        if signal["type"] == "color":
+            print(f"\nSignal {i}: {signal['method']}")
+            print(f"  Color: {signal['color']}")
+            print(f"  Confidence: {signal['confidence']:.3f}")
+            print(f"  Reason: {signal['reason']}")
+            print(f"  Probabilities: R={signal['probs']['RED']:.3f}, G={signal['probs']['GREEN']:.3f}, V={signal['probs']['VIOLET']:.3f}")
+        elif signal["type"] == "size":
+            print(f"\nSignal {i}: {signal['method']}")
+            print(f"  Size: {signal['size']}")
+            print(f"  Confidence: {signal['confidence']:.3f}")
+            print(f"  Reason: {signal['reason']}")
+            print(f"  Probabilities: BIG={signal['probs']['BIG']:.3f}, SMALL={signal['probs']['SMALL']:.3f}")
     
     # Backtest accuracy
     accuracy = backtest_momentum_system(df)
@@ -840,53 +925,73 @@ def main():
         # Track sent alerts to prevent duplicates
         sent_alerts = set()
         
-        # Compute Big/Small once per run from the latest data
-        size_probs, size_conf, size_reason = analyze_big_small(df, lookback=60)
-        size_line = f"\n⚖️  Size: {'BIG' if size_probs['BIG']>=0.5 else 'SMALL'} @ {max(size_probs.values()):.2f} (reason: {size_reason})"
-
-        for signal in signals:
-            if signal["confidence"] >= alert_threshold:
+        # Sort signals by confidence to prioritize strongest
+        signals = sorted(signals, key=lambda x: x["confidence"], reverse=True)
+        
+        # Only send alert for the STRONGEST signal to avoid confusion
+        if signals:
+            best_signal = signals[0]
+            
+            # Only alert if confidence is truly high
+            if best_signal["confidence"] >= alert_threshold:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 betting_period = get_next_betting_period(df)
                 betting_period = ensure_min_time_buffer(df, betting_period, min_buffer_seconds=35)
                 
                 # Create unique alert key to prevent duplicates
-                alert_key = f"{betting_period}_{signal['color']}_{signal['method']}"
+                if best_signal["type"] == "color":
+                    alert_key = f"{betting_period}_{best_signal['color']}_{best_signal['method']}"
+                else:
+                    alert_key = f"{betting_period}_{best_signal['size']}_{best_signal['method']}"
                 
                 # Skip if we already sent this alert
                 if alert_key in sent_alerts:
                     print(f"Skipping duplicate alert for {alert_key}")
-                    continue
+                    return
                 
                 # Create alert message for NEXT period betting
-                # Build alert with Big/Small info appended
-                msg = format_betting_alert(signal, betting_period, accuracy) + size_line
+                # Only show the strongest signal (no mixing color + size)
+                if best_signal["type"] == "color":
+                    msg = format_color_alert(best_signal, betting_period, accuracy)
+                    print(f"🎨 Sending COLOR alert: {best_signal['color']} @ {best_signal['confidence']:.3f}")
+                elif best_signal["type"] == "size":
+                    msg = format_size_alert(best_signal, betting_period, accuracy)
+                    print(f"⚖️  Sending SIZE alert: {best_signal['size']} @ {best_signal['confidence']:.3f}")
                 
                 # Mark this alert as sent
                 sent_alerts.add(alert_key)
                 
                 # Send Telegram alert
                 ok = send_telegram(cfg, msg)
-                print(f"Alert sent for {signal['color']}: {ok}")
+                if best_signal["type"] == "color":
+                    print(f"Alert sent for {best_signal['color']}: {ok}")
+                else:
+                    print(f"Alert sent for {best_signal['size']}: {ok}")
                 
                 # Log to database if enabled
                 if args.log_to_db:
                     try:
                         anchor_pid = str(df["period_id"].iloc[-1])
-                        log_alert_to_neon(
-                            cfg.neon_conn_str,
-                            anchor_pid,
-                            signal["color"],
-                            None,  # No number prediction in new system
-                            signal["probs"],
-                            [signal["method"]],
-                            signal["confidence"],
-                            accuracy,
-                            None,  # No cycle length
-                            0.0,   # No cycle accuracy
-                        )
+                        if best_signal["type"] == "color":
+                            log_alert_to_neon(
+                                cfg.neon_conn_str,
+                                anchor_pid,
+                                best_signal["color"],
+                                None,  # No number prediction in new system
+                                best_signal["probs"],
+                                [best_signal["method"]],
+                                best_signal["confidence"],
+                                accuracy,
+                                None,  # No cycle length
+                                0.0,   # No cycle accuracy
+                            )
+                        # Note: Size predictions not logged to database for now
                     except Exception as e:
                         print(f"Failed to log to database: {e}")
+            else:
+                print(f"❌ Best signal confidence {best_signal['confidence']:.3f} below threshold {alert_threshold}")
+        else:
+            print("❌ No signals to alert")
     
         # Summary
         print("\n" + "="*50)

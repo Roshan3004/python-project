@@ -10,7 +10,7 @@ on:
       preset:
         description: "Signal frequency preset"
         required: false
-        default: "aggressive"
+        default: "balanced"
         type: choice
         options:
           - conservative
@@ -58,9 +58,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PRESET: ${{ github.event.inputs.preset || 'balanced' }}
-          MAX_SIGNALS: ${{ github.event.inputs.max_signals || 5 }}
+          MAX_SIGNALS: ${{ github.event.inputs.max_signals || 3 }}
           MIN_SOURCES: ${{ github.event.inputs.min_sources || 2 }}
-          COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || 0.64 }}
+          COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || 0.68 }}
           LIMIT: ${{ github.event.inputs.limit || 2000 }}
         run: |
           echo "⏱  Sleeping 12s to allow scraper to write fresh row..." && sleep 12
