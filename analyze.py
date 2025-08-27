@@ -357,6 +357,35 @@ def format_betting_alert(signal: dict, betting_period: str, accuracy: float) -> 
     
     return msg
 
+def ensure_min_time_buffer(df: pd.DataFrame, betting_period: str, min_buffer_seconds: int = 35) -> str:
+    """If the computed betting_period starts in less than `min_buffer_seconds`,
+    shift it forward by one more minute to guarantee user has time to bet.
+    Works with both numeric-only ids and ids that start with YYYYMMDDHHMM.
+    """
+    now_utc = datetime.utcnow()
+    try:
+        if len(betting_period) >= 12 and betting_period[:12].isdigit():
+            target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+            seconds_until = (target_dt - now_utc).total_seconds()
+            if seconds_until < min_buffer_seconds:
+                # push one minute ahead but keep suffix
+                suffix = betting_period[12:]
+                new_dt = target_dt + timedelta(minutes=1)
+                return f"{new_dt.strftime('%Y%m%d%H%M')}{suffix}"
+            return betting_period
+        # Numeric-only fallback
+        val = int(betting_period)
+        # When we cannot parse time, still add +1 as conservative bump if we are too close
+        # Heuristic: if the latest row is within 20s of the minute boundary, bump +1
+        last_ts = pd.to_datetime(df["scraped_at"].iloc[-1], errors='coerce')
+        if pd.notna(last_ts):
+            sec = last_ts.second
+            if sec >= 40:
+                return str(val + 1)
+        return betting_period
+    except Exception:
+        return betting_period
+
 def manipulation_indicators(numbers: List[int], colors: List[str]) -> Dict[str, bool]:
     flags = {}
     # 1) Violet rate spike
@@ -708,8 +737,9 @@ def main():
         
         for signal in signals:
             if signal["confidence"] >= alert_threshold:
-                # Calculate the NEXT period ID for betting
+                # Calculate the NEXT period ID for betting and ensure a safe buffer
                 betting_period = get_next_betting_period(df)
+                betting_period = ensure_min_time_buffer(df, betting_period, min_buffer_seconds=35)
                 
                 # Create unique alert key to prevent duplicates
                 alert_key = f"{betting_period}_{signal['color']}_{signal['method']}"
