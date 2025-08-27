@@ -293,40 +293,29 @@ def send_telegram(cfg: ScraperConfig, text: str) -> bool:
         return False
 
 def get_next_betting_period(df: pd.DataFrame) -> str:
-    """Calculate the next period ID for betting based on latest data and current time.
+    """Return the next period id.
 
-    - Uses the latest period in df to preserve any provider-specific suffix
-    - Ensures the suggested period is NOT in the past by comparing to now rounded up to the next minute
+    Important: OK.Win's period id is NOT a pure timestamp. Many realms use a
+    fixed middle token like "10001" with a trailing counter. So the safest and
+    correct way is to treat it as an integer and increment by 1.
     """
     try:
-        latest_period = str(df["period_id"].iloc[-1])
+        latest_period = str(df["period_id"].iloc[-1]).strip()
+        # Prefer numeric increment. If it fails, fall back to timestamp heuristic.
+        try:
+            return str(int(latest_period) + 1)
+        except Exception:
+            pass
 
-        # Default suffix used if none present
-        default_suffix = "001"
-
-        # Compute the timestamp portion from latest_period if present
+        # Fallback: preserve suffix if present but still advance minute boundary
         if len(latest_period) >= 12:
             timestamp_part = latest_period[:12]
-            period_num = latest_period[12:] if len(latest_period) > 12 else default_suffix
-
-            # Parse latest timestamp and compute next logical minute after it
+            suffix = latest_period[12:]
             latest_dt = datetime.strptime(timestamp_part, "%Y%m%d%H%M")
-            next_after_latest = latest_dt + timedelta(minutes=1)
-
-            # Also compute "now" rounded up to next minute to avoid past targets
-            now_dt = datetime.utcnow()  # use UTC to be stable in Actions
-            round_up_now = (now_dt.replace(second=0, microsecond=0) + timedelta(minutes=1))
-
-            target_dt = max(next_after_latest, round_up_now)
-            target_timestamp = target_dt.strftime("%Y%m%d%H%M")
-            return f"{target_timestamp}{period_num}"
-        else:
-            # If format is unknown, fall back to numeric increment and ensure not past
-            try:
-                next_num = int(latest_period) + 1
-                return str(next_num)
-            except:
-                return latest_period
+            now_dt = datetime.utcnow()
+            target_dt = max(latest_dt + timedelta(minutes=1), now_dt.replace(second=0, microsecond=0) + timedelta(minutes=1))
+            return f"{target_dt.strftime('%Y%m%d%H%M')}{suffix or '001'}"
+        return latest_period
     except Exception as e:
         print(f"Warning: Could not calculate next period: {e}")
         return "UNKNOWN"
