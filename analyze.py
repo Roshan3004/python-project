@@ -292,6 +292,63 @@ def send_telegram(cfg: ScraperConfig, text: str) -> bool:
     except Exception:
         return False
 
+def get_next_betting_period(df: pd.DataFrame) -> str:
+    """Calculate the next period ID for betting based on latest data"""
+    try:
+        latest_period = str(df["period_id"].iloc[-1])
+        
+        # Handle different period ID formats
+        if len(latest_period) >= 12:  # Format: YYYYMMDDHHMM
+            timestamp_part = latest_period[:12]
+            period_num = latest_period[12:] if len(latest_period) > 12 else "001"
+            
+            # Parse timestamp and add 1 minute
+            dt = datetime.strptime(timestamp_part, "%Y%m%d%H%M")
+            next_dt = dt + timedelta(minutes=1)
+            next_timestamp = next_dt.strftime("%Y%m%d%H%M")
+            
+            # Next period ID
+            next_period = f"{next_timestamp}{period_num}"
+            return next_period
+        else:
+            # If format is different, try to increment numerically
+            try:
+                next_num = int(latest_period) + 1
+                return str(next_num)
+            except:
+                return latest_period
+    except Exception as e:
+        print(f"Warning: Could not calculate next period: {e}")
+        return "UNKNOWN"
+
+def format_betting_alert(signal: dict, betting_period: str, accuracy: float) -> str:
+    """Format a betting alert message with clear instructions"""
+    color = signal["color"]
+    method = signal["method"]
+    confidence = signal["confidence"]
+    reason = signal["reason"]
+    probs = signal["probs"]
+    
+    # Calculate time until next round (assuming 1-minute intervals)
+    current_time = datetime.now()
+    next_round_time = current_time + timedelta(minutes=1)
+    
+    msg = (
+        f"🚨 WinGo Strong Signal: {color}\n"
+        f"🔢 Bet on Period: {betting_period}\n"
+        f"📊 Method: {method}\n"
+        f"🎯 Confidence: {confidence:.3f}\n"
+        f"💡 Reason: {reason}\n"
+        f"📈 Probs: R={probs['RED']:.2f} G={probs['GREEN']:.2f} V={probs['VIOLET']:.2f}\n"
+        f"✅ System Accuracy: {accuracy:.1%}\n"
+        f"⏰ Alert Time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"⏱️  Next Round: {next_round_time.strftime('%H:%M:%S')}\n"
+        f"🎲 Place bet on {color} for the NEXT round!\n"
+        f"💡 Tip: Bet within the next 30 seconds for best timing"
+    )
+    
+    return msg
+
 def manipulation_indicators(numbers: List[int], colors: List[str]) -> Dict[str, bool]:
     flags = {}
     # 1) Violet rate spike
@@ -638,22 +695,27 @@ def main():
         else:
             alert_threshold = args.color_prob_threshold
             
+        # Track sent alerts to prevent duplicates
+        sent_alerts = set()
+        
         for signal in signals:
             if signal["confidence"] >= alert_threshold:
-                # Get the latest period ID
-                latest_period = str(df["period_id"].iloc[-1])
+                # Calculate the NEXT period ID for betting
+                betting_period = get_next_betting_period(df)
                 
-                # Create alert message with period number
-                msg = (
-                    f"🚨 WinGo Strong Signal: {signal['color']}\n"
-                    f"🔢 Period: {latest_period}\n"
-                    f"📊 Method: {signal['method']}\n"
-                    f"🎯 Confidence: {signal['confidence']:.3f}\n"
-                    f"💡 Reason: {signal['reason']}\n"
-                    f"📈 Probs: R={signal['probs']['RED']:.2f} G={signal['probs']['GREEN']:.2f} V={signal['probs']['VIOLET']:.2f}\n"
-                    f"✅ System Accuracy: {accuracy:.1%}\n"
-                    f"⏰ Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
+                # Create unique alert key to prevent duplicates
+                alert_key = f"{betting_period}_{signal['color']}_{signal['method']}"
+                
+                # Skip if we already sent this alert
+                if alert_key in sent_alerts:
+                    print(f"Skipping duplicate alert for {alert_key}")
+                    continue
+                
+                # Create alert message for NEXT period betting
+                msg = format_betting_alert(signal, betting_period, accuracy)
+                
+                # Mark this alert as sent
+                sent_alerts.add(alert_key)
                 
                 # Send Telegram alert
                 ok = send_telegram(cfg, msg)
@@ -678,8 +740,28 @@ def main():
                     except Exception as e:
                         print(f"Failed to log to database: {e}")
     
-    print("\n✅ Analysis complete!")
-    print(f"📊 Summary:")
+        # Summary
+        print("\n" + "="*50)
+        print("📊 ANALYSIS SUMMARY")
+        print("="*50)
+        print(f"📈 Data analyzed: {len(df)} rounds")
+        print(f"🎯 Signals detected: {len(signals)}")
+        print(f"📱 Alerts sent: {len(sent_alerts)}")
+        print(f"⚙️  Preset used: {args.preset}")
+        print(f"🎲 Next betting period: {get_next_betting_period(df)}")
+        print(f"⏰ Analysis completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("="*50)
+        print("✅ Analysis complete!")
+        
+        if args.enable_alert and signals:
+            print("\n💡 BETTING INSTRUCTIONS:")
+            print("1. Wait for the NEXT round to start")
+            print("2. Place your bet on the indicated color")
+            print("3. Bet within 30 seconds of round start for best timing")
+            print("4. Monitor results and adjust strategy as needed")
+    
+    # Final summary for all cases
+    print(f"\n📊 Final Summary:")
     print(f"   - Data analyzed: {len(df)} rounds")
     print(f"   - Signals detected: {len(signals)}")
     print(f"   - System accuracy: {accuracy:.1%}")
