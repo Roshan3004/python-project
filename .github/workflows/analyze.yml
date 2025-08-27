@@ -6,15 +6,22 @@ on:
       limit:
         description: "Rows to load from Neon"
         required: false
-        default: "20000"
-      color_prob_threshold:
-        description: "Min prob to alert"
+        default: "2000"
+      preset:
+        description: "Signal frequency preset"
         required: false
-        default: "0.60"
-      min_sources:
-        description: "Min agreeing sources"
+        default: "aggressive"
+        type: choice
+        options:
+          - conservative
+          - balanced
+          - aggressive
+          - very_aggressive
+      max_signals:
+        description: "Max signals per analysis run"
         required: false
-        default: "1"
+        default: "5"
+        type: number
   # 10-min schedule during awake hours only (IST 09:00–01:30)
   # IST 09:00 = 03:30 UTC start; run every 10 min until 20:00 UTC (01:30 IST)
   schedule:
@@ -45,13 +52,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run analyzer (alerts only on signals)
+      - name: Run momentum analysis with drift detection
         env:
           NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          LIMIT: ${{ github.event.inputs.limit || '20000' }}
-          COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || '0.60' }}
-          MIN_SOURCES: ${{ github.event.inputs.min_sources || '1' }}
+          PRESET: ${{ github.event.inputs.preset || 'aggressive' }}
+          MAX_SIGNALS: ${{ github.event.inputs.max_signals || 5 }}
+          LIMIT: ${{ github.event.inputs.limit || 2000 }}
         run: |
-          python analyze.py --source db --limit "$LIMIT" --enable_alert --log_to_db --color_prob_threshold "$COLOR_PROB" --min_sources "$MIN_SOURCES"
+          echo "🚀 Starting WinGo Momentum Analysis (Preset: $PRESET)"
+          python analyze.py \
+            --preset $PRESET \
+            --max_signals $MAX_SIGNALS \
+            --limit $LIMIT \
+            --enable_alert \
+            --enable_drift_check \
+            --log_to_db

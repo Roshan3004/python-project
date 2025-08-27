@@ -8,6 +8,13 @@ import requests
 from db import MongoStore
 from strategy import suggest_next, suggest_from_ensemble
 from config import ScraperConfig
+from momentum_config import (
+    get_optimized_thresholds, 
+    get_lookback_periods, 
+    is_aggressive_mode_enabled,
+    get_max_signals_per_run,
+    get_preset_config
+)
 
 def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
@@ -302,123 +309,341 @@ def summarize_flags(flags: Dict[str,bool]) -> Tuple[bool, str]:
     active = [k for k,v in flags.items() if v]
     return (len(active)>0, (", ".join(active) if active else "none"))
 
+# ====== NEW MOMENTUM-BASED ANALYSIS SYSTEM ======
+
+def analyze_color_momentum(df: pd.DataFrame, lookback: int = 20) -> Dict[str, float]:
+    """Analyze color momentum based on recent frequency and streaks"""
+    if len(df) < lookback:
+        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+    
+    recent = df.tail(lookback)
+    colors = recent["color"].tolist()
+    
+    # Count recent frequencies
+    color_counts = {"RED": 0, "GREEN": 0, "VIOLET": 0}
+    for color in colors:
+        color_counts[color] += 1
+    
+    # Calculate momentum scores
+    total = len(colors)
+    momentum_scores = {}
+    
+    for color in ["RED", "GREEN", "VIOLET"]:
+        # Base frequency
+        freq_score = color_counts[color] / total
+        
+        # Streak bonus (consecutive appearances)
+        streak_bonus = 0
+        current_streak = 0
+        for c in reversed(colors):
+            if c == color:
+                current_streak += 1
+                streak_bonus += 0.05 * current_streak
+            else:
+                break
+        
+        # Recent bias (last 5 rounds)
+        recent_bias = 0
+        last_5 = colors[-5:] if len(colors) >= 5 else colors
+        recent_count = last_5.count(color)
+        if recent_count > 0:
+            recent_bias = 0.1 * recent_count
+        
+        # Combine scores
+        momentum_scores[color] = freq_score + streak_bonus + recent_bias
+    
+    # Normalize to probabilities
+    total_score = sum(momentum_scores.values())
+    if total_score > 0:
+        return {color: score / total_score for color, score in momentum_scores.items()}
+    else:
+        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+
+def analyze_number_patterns(df: pd.DataFrame, lookback: int = 30) -> Dict[str, float]:
+    """Analyze number patterns for better predictions"""
+    if len(df) < lookback:
+        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+    
+    recent = df.tail(lookback)
+    numbers = recent["number"].tolist()
+    
+    # Analyze number distribution
+    number_counts = [0] * 10
+    for num in numbers:
+        number_counts[num] += 1
+    
+    # Find under-represented numbers (potential for correction)
+    avg_count = len(numbers) / 10
+    under_rep = []
+    for i, count in enumerate(number_counts):
+        if count < avg_count * 0.7:  # 30% below average
+            under_rep.append(i)
+    
+    # Calculate color probabilities based on under-represented numbers
+    red_prob = sum(1 for i in under_rep if i % 2 == 1) / max(len(under_rep), 1)
+    green_prob = sum(1 for i in under_rep if i % 2 == 0 and i not in [0, 5]) / max(len(under_rep), 1)
+    violet_prob = sum(1 for i in under_rep if i in [0, 5]) / max(len(under_rep), 1)
+    
+    # Normalize
+    total = red_prob + green_prob + violet_prob
+    if total > 0:
+        return {
+            "RED": red_prob / total,
+            "GREEN": green_prob / total,
+            "VIOLET": violet_prob / total
+        }
+    else:
+        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+
+def analyze_time_based_patterns(df: pd.DataFrame) -> Dict[str, float]:
+    """Analyze patterns based on time of day"""
+    if len(df) < 50:
+        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+    
+    # Add time information
+    df_with_time = df.copy()
+    df_with_time["hour"] = pd.to_datetime(df_with_time["scraped_at"]).dt.hour
+    
+    # Group by hour and analyze color distribution
+    hourly_colors = {}
+    for hour in range(24):
+        hour_data = df_with_time[df_with_time["hour"] == hour]
+        if len(hour_data) >= 10:  # Need sufficient data
+            colors = hour_data["color"].tolist()
+            hourly_colors[hour] = {
+                "RED": colors.count("RED") / len(colors),
+                "GREEN": colors.count("GREEN") / len(colors),
+                "VIOLET": colors.count("VIOLET") / len(colors)
+            }
+    
+    # Get current hour
+    current_hour = datetime.now().hour
+    
+    # Find similar hours (within 2 hours)
+    similar_hours = []
+    for hour in hourly_colors:
+        if abs(hour - current_hour) <= 2:
+            similar_hours.append(hour)
+    
+    if similar_hours:
+        # Average probabilities from similar hours
+        avg_probs = {"RED": 0, "GREEN": 0, "VIOLET": 0}
+        for hour in similar_hours:
+            for color in ["RED", "GREEN", "VIOLET"]:
+                avg_probs[color] += hourly_colors[hour][color]
+        
+        # Normalize
+        total = sum(avg_probs.values())
+        if total > 0:
+            return {color: prob / total for color, prob in avg_probs.items()}
+    
+    return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+
+def detect_strong_signals(df: pd.DataFrame, min_confidence: float = 0.65) -> List[Dict]:
+    """Detect strong signals using multiple analysis methods"""
+    signals = []
+    
+    # Method 1: Color Momentum
+    momentum_probs = analyze_color_momentum(df, lookback=25)
+    momentum_confidence = max(momentum_probs.values())
+    if momentum_confidence >= min_confidence:
+        top_color = max(momentum_probs, key=momentum_probs.get)
+        signals.append({
+            "method": "Momentum",
+            "color": top_color,
+            "confidence": momentum_confidence,
+            "probs": momentum_probs,
+            "reason": f"Strong {top_color} momentum with {momentum_confidence:.2f} confidence"
+        })
+    
+    # Method 2: Number Pattern Correction
+    number_probs = analyze_number_patterns(df, lookback=35)
+    number_confidence = max(number_probs.values())
+    if number_confidence >= min_confidence:
+        top_color = max(number_probs, key=number_probs.get)
+        signals.append({
+            "method": "NumberPattern",
+            "color": top_color,
+            "confidence": number_confidence,
+            "probs": number_probs,
+            "reason": f"Number pattern suggests {top_color} correction with {number_confidence:.2f} confidence"
+        })
+    
+    # Method 3: Time-based Patterns
+    time_probs = analyze_time_based_patterns(df)
+    time_confidence = max(time_probs.values())
+    if time_confidence >= min_confidence:
+        top_color = max(time_probs, key=time_probs.get)
+        signals.append({
+            "method": "TimePattern",
+            "color": top_color,
+            "confidence": time_confidence,
+            "probs": time_probs,
+            "reason": f"Time-based pattern favors {top_color} with {time_confidence:.2f} confidence"
+        })
+    
+    # Method 4: Combined Analysis (ensemble)
+    if len(signals) >= 2:
+        # Combine probabilities from multiple methods
+        combined_probs = {"RED": 0, "GREEN": 0, "VIOLET": 0}
+        total_weight = 0
+        
+        for signal in signals:
+            weight = signal["confidence"]
+            for color, prob in signal["probs"].items():
+                combined_probs[color] += prob * weight
+            total_weight += weight
+        
+        if total_weight > 0:
+            combined_probs = {color: prob / total_weight for color, prob in combined_probs.items()}
+            combined_confidence = max(combined_probs.values())
+            
+            if combined_confidence >= min_confidence + 0.05:  # Higher threshold for ensemble
+                top_color = max(combined_probs, key=combined_probs.get)
+                signals.append({
+                    "method": "Ensemble",
+                    "color": top_color,
+                    "confidence": combined_confidence,
+                    "probs": combined_probs,
+                    "reason": f"Multiple methods agree on {top_color} with {combined_confidence:.2f} confidence"
+                })
+    
+    return signals
+
+def backtest_momentum_system(df: pd.DataFrame, lookback: int = 300) -> float:
+    """Backtest the momentum system to estimate accuracy"""
+    if len(df) < lookback + 50:
+        return 0.5
+    
+    correct_predictions = 0
+    total_predictions = 0
+    
+    for i in range(50, min(lookback, len(df) - 1)):
+        # Use data up to position i to predict position i+1
+        train_data = df.iloc[:i+1]
+        actual_color = df.iloc[i+1]["color"]
+        
+        # Get prediction
+        momentum_probs = analyze_color_momentum(train_data, lookback=20)
+        predicted_color = max(momentum_probs, key=momentum_probs.get)
+        
+        if predicted_color == actual_color:
+            correct_predictions += 1
+        total_predictions += 1
+    
+    return correct_predictions / total_predictions if total_predictions > 0 else 0.5
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--source", choices=["csv","db"], default="csv")
-    ap.add_argument("--path", default="data/history.csv", help="CSV path when --source=csv")
-    ap.add_argument("--limit", type=int, default=20000, help="Rows to load from Neon when --source=db")
-    ap.add_argument("--enable_alert", action="store_true", help="Send Telegram alert when high-confidence signal detected")
-    ap.add_argument("--color_prob_threshold", type=float, default=0.62)
-    ap.add_argument("--min_sources", type=int, default=2)
-    ap.add_argument("--log_to_db", action="store_true", help="Persist BET alerts to Neon in prediction_alerts table")
+    ap.add_argument("--source", choices=["csv", "db"], default="db")
+    ap.add_argument("--path", default="data/history.csv")
+    ap.add_argument("--limit", type=int, default=2000)
+    ap.add_argument("--enable_alert", action="store_true")
+    ap.add_argument("--log_to_db", action="store_true")
+    ap.add_argument("--color_prob_threshold", type=float, default=0.60)
+    ap.add_argument("--min_sources", type=int, default=1)
+    ap.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
+                   default="balanced", help="Use preset configuration for signal frequency")
+    ap.add_argument("--max_signals", type=int, default=5, help="Maximum signals per analysis run")
     args = ap.parse_args()
+    
+    # Load preset configuration if specified
+    if args.preset != "balanced":
+        preset_config = get_preset_config(args.preset)
+        print(f"Using {args.preset} preset configuration:")
+        for method, threshold in preset_config.items():
+            print(f"  {method}: {threshold}")
+        print()
 
+    # Load data
     if args.source == "csv":
         df = load_csv(args.path)
     else:
-        # Load from Neon directly
         cfg = ScraperConfig()
         df = load_neon(cfg.neon_conn_str, limit=args.limit)
-
-    if df.empty:
-        print("No data yet. Run simulator.py or scraper.py first.")
+    
+    if len(df) < 100:
+        print(f"Insufficient data: {len(df)} rows. Need at least 100.")
         return
-
-    df = df.sort_values("period_id")
-    nums = df["number"].astype(int).tolist()
-    cols = [c.upper() for c in df["color"].tolist()]
-
-    chi, p = chi_square_color(df.tail(400))
-    cycle_len, template = find_cycle(nums)
-    pred_next_cycle = next_from_cycle(nums, cycle_len, template) if cycle_len else None
-    cycle_acc = validate_cycle(nums, cycle_len, template) if cycle_len else 0.0
-    flags = manipulation_indicators(nums, cols)
-    active, reason = summarize_flags(flags)
-
-    # Build Markov models
-    Mnum, last_num = build_markov_number(nums)
-    num_vote = None
-    num_prob = 0.0
-    if last_num is not None:
-        row = Mnum[last_num]
-        num_vote = int(np.argmax(row))
-        num_prob = float(row[num_vote])
-
-    Mc, last_col = build_markov_color(cols)
-    color_probs = markov_color_probs(Mc, last_col)
-
-    # Simple ensemble decision
-    sources = []
-    if last_col is not None:
-        sources.append("MarkovColor")
-    if last_num is not None:
-        sources.append("MarkovNumber")
-    if cycle_len and cycle_acc >= 0.60:
-        sources.append(f"Cycle{cycle_len}")
-        # If cycle also gives a number, prefer it when it agrees with Markov
-        if pred_next_cycle is not None:
-            num_vote = pred_next_cycle if num_vote is None else num_vote
-
-    sig = suggest_from_ensemble(color_probs, num_vote, sources, args.color_prob_threshold, args.min_sources)
-
-    print("=== Analysis Report ===")
-    print(f"Samples analyzed: {len(df)} (last 400 used for some tests)")
-    print(f"Chi-square p-value (color balance): {p:.4f} -> {'OK (PRNG-likely)' if p>0.05 else 'Skewed'}")
-    if cycle_len:
-        print(f"Detected cycle length: {cycle_len}, val_acc={cycle_acc:.2f}, template (first 12): {template[:12]}")
-        if pred_next_cycle is not None:
-            print(f"Cycle predicted number: {pred_next_cycle}, color: {'VIOLET' if pred_next_cycle in (0,5) else ('GREEN' if pred_next_cycle%2==0 else 'RED')}")
+    
+    print(f"=== WinGo Momentum Analysis ===")
+    print(f"Data loaded: {len(df)} rows")
+    
+    # Detect strong signals with preset configuration
+    if args.preset != "balanced":
+        # Use preset thresholds
+        preset_config = get_preset_config(args.preset)
+        signals = detect_strong_signals(df, min_confidence=preset_config["momentum"])
     else:
-        print("No reliable cycle detected.")
-    print(f"Manipulation flags: {reason}")
-    print(f"Markov number vote: {num_vote} @ {num_prob:.2f}")
-    print(f"Color probs: {color_probs}")
-    print(f"Signal: {sig.mode} -> {sig.suggestion} (confidence {sig.confidence:.2f}); sources={sig.sources}")
-
-    # Backtest precision (approx.) and optional alert
-    precision = backtest_markov_color(cols)
-    print(f"Approx. Markov color precision over last 300: {precision:.2f}")
-
-    if args.enable_alert and sig.suggestion.startswith("BET_") and sig.confidence >= args.color_prob_threshold and precision >= 0.60:
+        # Use default threshold
+        signals = detect_strong_signals(df, min_confidence=args.color_prob_threshold)
+    
+    # Limit number of signals per run
+    max_signals = min(args.max_signals, get_max_signals_per_run())
+    if len(signals) > max_signals:
+        # Sort by confidence and keep top signals
+        signals = sorted(signals, key=lambda x: x["confidence"], reverse=True)[:max_signals]
+        print(f"Limited to top {max_signals} signals by confidence")
+    
+    if not signals:
+        print("No strong signals detected with current threshold.")
+        print("Consider using --preset aggressive or --preset very_aggressive for more signals.")
+        return
+    
+    # Display signals
+    print(f"\n🎯 Strong Signals Detected: {len(signals)}")
+    for i, signal in enumerate(signals, 1):
+        print(f"\nSignal {i}: {signal['method']}")
+        print(f"  Color: {signal['color']}")
+        print(f"  Confidence: {signal['confidence']:.3f}")
+        print(f"  Reason: {signal['reason']}")
+        print(f"  Probabilities: RED={signal['probs']['RED']:.3f}, GREEN={signal['probs']['GREEN']:.3f}, VIOLET={signal['probs']['VIOLET']:.3f}")
+    
+    # Backtest accuracy
+    accuracy = backtest_momentum_system(df)
+    print(f"\n📊 Estimated System Accuracy: {accuracy:.3f} ({accuracy*100:.1f}%)")
+    
+    # Send alerts for strong signals
+    if args.enable_alert and signals:
         cfg = ScraperConfig()
-        top_color = sig.suggestion.replace("BET_", "")
-        number_line = f", number={num_vote}" if num_vote is not None else ""
-        # Determine anchor period (latest in DB) and a hint for the next target period
-        try:
-            anchor_pid = str(df["period_id"].iloc[-1])
-        except Exception:
-            anchor_pid = str(len(df))
-        try:
-            target_hint = f", next≈{int(anchor_pid)+1}"
-        except Exception:
-            target_hint = ", next round"
-        msg = (
-            f"WinGo signal: color={top_color}{number_line}\n"
-            f"anchor={anchor_pid}{target_hint}\n"
-            f"probs={{{'RED':round(color_probs.get('RED',0),2), 'GREEN':round(color_probs.get('GREEN',0),2), 'VIOLET':round(color_probs.get('VIOLET',0),2)}}}\n"
-            f"confidence={sig.confidence:.2f} | last300_precision={precision:.2f}\n"
-            f"cycle={'len='+str(cycle_len)+' acc='+str(round(cycle_acc,2)) if cycle_len else 'none'}\n"
-            f"rows={len(df)} | at={datetime.now(timezone.utc).isoformat()}"
-        )
-        ok = send_telegram(cfg, msg)
-        print(f"Alert sent: {ok}")
-        # Optional: persist this alert for later evaluation
-        if args.log_to_db:
-            log_alert_to_neon(
-                cfg.neon_conn_str,
-                anchor_pid,
-                top_color,
-                int(num_vote) if num_vote is not None else None,
-                {k: float(v) for k,v in color_probs.items()},
-                sig.sources,
-                float(sig.confidence),
-                float(precision),
-                int(cycle_len) if cycle_len else None,
-                float(cycle_acc),
-            )
-            # Also resolve a batch of previous unresolved alerts
-            resolve_unresolved_alerts(cfg.neon_conn_str, batch_limit=200)
-    print("=======================")
+        
+        for signal in signals:
+            if signal["confidence"] >= args.color_prob_threshold:
+                # Create alert message
+                msg = (
+                    f"🚨 WinGo Strong Signal: {signal['color']}\n"
+                    f"Method: {signal['method']}\n"
+                    f"Confidence: {signal['confidence']:.3f}\n"
+                    f"Reason: {signal['reason']}\n"
+                    f"Probs: R={signal['probs']['RED']:.2f} G={signal['probs']['GREEN']:.2f} V={signal['probs']['VIOLET']:.2f}\n"
+                    f"System Accuracy: {accuracy:.1%}\n"
+                    f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                
+                # Send Telegram alert
+                ok = send_telegram(cfg, msg)
+                print(f"Alert sent for {signal['color']}: {ok}")
+                
+                # Log to database if enabled
+                if args.log_to_db:
+                    try:
+                        anchor_pid = str(df["period_id"].iloc[-1])
+                        log_alert_to_neon(
+                            cfg.neon_conn_str,
+                            anchor_pid,
+                            signal["color"],
+                            None,  # No number prediction in new system
+                            signal["probs"],
+                            [signal["method"]],
+                            signal["confidence"],
+                            accuracy,
+                            None,  # No cycle length
+                            0.0,   # No cycle accuracy
+                        )
+                    except Exception as e:
+                        print(f"Failed to log to database: {e}")
+    
+    print("\n✅ Analysis complete!")
 
 if __name__ == "__main__":
     main()
