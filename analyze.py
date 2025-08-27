@@ -16,6 +16,88 @@ from momentum_config import (
     get_preset_config
 )
 
+# ====== Helpers for size (Big/Small) ======
+def number_to_size(n: int) -> str:
+    try:
+        n = int(n)
+        return "BIG" if n >= 5 else "SMALL"
+    except Exception:
+        return "SMALL"
+
+def build_markov_size(sizes: List[str], window: int = 300, alpha: float = 1.0) -> Tuple[Dict[str, Dict[str, float]], Optional[str]]:
+    keys = ["SMALL","BIG"]
+    idx = {c:i for i,c in enumerate(keys)}
+    if not sizes:
+        return {k:{kk:0.5 for kk in keys} for k in keys}, None
+    seq = [s if s in idx else number_to_size(s) for s in sizes][-window:]
+    import numpy as np as _np  # local alias to protect global
+    M = _np.full((2,2), alpha, dtype=float)
+    for a,b in zip(seq[:-1], seq[1:]):
+        if a in idx and b in idx:
+            M[idx[a], idx[b]] += 1
+    M = M / M.sum(axis=1, keepdims=True)
+    out = {keys[i]: {keys[j]: float(M[i,j]) for j in range(2)} for i in range(2)}
+    return out, seq[-1]
+
+def size_markov_probs(transition: Dict[str, Dict[str, float]], last_size: Optional[str]) -> Dict[str, float]:
+    keys = ["SMALL","BIG"]
+    if not last_size or last_size not in transition:
+        return {k: 0.5 for k in keys}
+    row = transition[last_size]
+    s = sum(row.values()) or 1.0
+    return {k: row.get(k, 0.0)/s for k in keys}
+
+def analyze_big_small(df: pd.DataFrame, lookback: int = 60) -> Tuple[Dict[str,float], float, str]:
+    """Return (probs, confidence, reason) for BIG/SMALL.
+
+    Blend of:
+      - frequency momentum over last `lookback`
+      - streak bonus on the most recent run
+      - Markov 1-step on BIG/SMALL transitions
+    """
+    if len(df) < max(lookback, 20):
+        return {"BIG": 0.5, "SMALL": 0.5}, 0.5, "Insufficient data; default 0.5"
+
+    recent = df.tail(lookback)
+    nums = recent["number"].astype(int).tolist()
+    sizes = [number_to_size(n) for n in nums]
+
+    big_count = sum(1 for s in sizes if s == "BIG")
+    small_count = lookback - big_count
+
+    # frequency
+    p_big_freq = big_count / lookback
+    p_small_freq = 1.0 - p_big_freq
+
+    # streak bonus
+    current = sizes[-1]
+    streak = 1
+    for s in reversed(sizes[:-1]):
+        if s == current:
+            streak += 1
+        else:
+            break
+    bonus = min(0.10, 0.03 * streak)  # cap at +0.10
+    if current == "BIG":
+        p_big_streak = min(0.99, p_big_freq + bonus)
+        p_small_streak = 1 - p_big_streak
+    else:
+        p_small_streak = min(0.99, p_small_freq + bonus)
+        p_big_streak = 1 - p_small_streak
+
+    # Markov 1-step
+    trans, last_size = build_markov_size(sizes, window=min(300, lookback))
+    mkv = size_markov_probs(trans, last_size)
+
+    # Blend: 50% momentum(streak) + 50% markov
+    p_big = 0.5 * p_big_streak + 0.5 * mkv.get("BIG", 0.5)
+    p_small = 1.0 - p_big
+
+    top = "BIG" if p_big >= p_small else "SMALL"
+    conf = max(p_big, p_small)
+    reason = f"freq={p_big_freq:.2f}/{p_small_freq:.2f}, streak={streak}, markov_BIG={mkv.get('BIG',0.5):.2f}"
+    return {"BIG": p_big, "SMALL": p_small}, conf, reason
+
 def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     df = df.dropna(subset=["period_id", "number", "color"])
@@ -640,7 +722,7 @@ def main():
                    default="balanced", help="Use preset configuration for signal frequency")
     ap.add_argument("--max_signals", type=int, default=5, help="Maximum signals per analysis run")
     args = ap.parse_args()
-    
+
     # Load preset configuration if specified
     if args.preset != "balanced":
         preset_config = get_preset_config(args.preset)
@@ -651,12 +733,12 @@ def main():
 
     # Load data
     try:
-        if args.source == "csv":
-            df = load_csv(args.path)
-        else:
-            cfg = ScraperConfig()
-            df = load_neon(cfg.neon_conn_str, limit=args.limit)
-        
+    if args.source == "csv":
+        df = load_csv(args.path)
+    else:
+        cfg = ScraperConfig()
+        df = load_neon(cfg.neon_conn_str, limit=args.limit)
+
         if df is None or df.empty:
             print("❌ No data loaded. Check database connection or CSV file.")
             return
@@ -671,7 +753,7 @@ def main():
         print(f"❌ Error loading data: {e}")
         print("   Check your database connection and credentials.")
         return
-    
+
     print(f"=== WinGo Momentum Analysis ===")
     print(f"Data loaded: {len(df)} rows")
     print(f"Analysis preset: {args.preset}")
@@ -735,6 +817,10 @@ def main():
         # Track sent alerts to prevent duplicates
         sent_alerts = set()
         
+        # Compute Big/Small once per run from the latest data
+        size_probs, size_conf, size_reason = analyze_big_small(df, lookback=60)
+        size_line = f"\n⚖️  Size: {'BIG' if size_probs['BIG']>=0.5 else 'SMALL'} @ {max(size_probs.values()):.2f} (reason: {size_reason})"
+
         for signal in signals:
             if signal["confidence"] >= alert_threshold:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
@@ -750,7 +836,8 @@ def main():
                     continue
                 
                 # Create alert message for NEXT period betting
-                msg = format_betting_alert(signal, betting_period, accuracy)
+                # Build alert with Big/Small info appended
+                msg = format_betting_alert(signal, betting_period, accuracy) + size_line
                 
                 # Mark this alert as sent
                 sent_alerts.add(alert_key)
@@ -761,11 +848,11 @@ def main():
                 
                 # Log to database if enabled
                 if args.log_to_db:
-                    try:
-                        anchor_pid = str(df["period_id"].iloc[-1])
-                        log_alert_to_neon(
-                            cfg.neon_conn_str,
-                            anchor_pid,
+        try:
+            anchor_pid = str(df["period_id"].iloc[-1])
+            log_alert_to_neon(
+                cfg.neon_conn_str,
+                anchor_pid,
                             signal["color"],
                             None,  # No number prediction in new system
                             signal["probs"],

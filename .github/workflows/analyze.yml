@@ -52,20 +52,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run momentum analysis
+      - name: Run momentum analysis (delayed start for fresh data)
         env:
           NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          PRESET: ${{ github.event.inputs.preset || 'aggressive' }}
+          PRESET: ${{ github.event.inputs.preset || 'balanced' }}
           MAX_SIGNALS: ${{ github.event.inputs.max_signals || 5 }}
+          MIN_SOURCES: ${{ github.event.inputs.min_sources || 2 }}
+          COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || 0.64 }}
           LIMIT: ${{ github.event.inputs.limit || 2000 }}
         run: |
+          echo "⏱  Sleeping 12s to allow scraper to write fresh row..." && sleep 12
           echo "🚀 Starting WinGo Momentum Analysis (Preset: $PRESET)"
           python analyze.py \
             --source db \
             --preset $PRESET \
             --max_signals $MAX_SIGNALS \
+            --min_sources $MIN_SOURCES \
+            --color_prob_threshold $COLOR_PROB \
             --limit $LIMIT \
             --enable_alert \
             --log_to_db
