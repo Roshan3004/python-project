@@ -1393,45 +1393,29 @@ def main():
     # Support one-shot execution for cron/CI runners
     oneshot = os.getenv("ONESHOT", "").lower() in ("1", "true", "yes")
     if oneshot:
-        # --- START: Added timing logic for one-shot mode ---
-        run_start_time = time.perf_counter()
-        
         try:
-            # Measure DB read
-            db_read_start = time.perf_counter()
             last_seen = get_db_last_seen(cfg.neon_conn_str)
-            db_read_duration = (time.perf_counter() - db_read_start) * 1000  # in milliseconds
-
-            # Measure API fetch
-            api_fetch_start = time.perf_counter()
+            if last_seen:
+                logger.info(f"[One-shot] DB last_seen: {last_seen}; attempting backfill...")
+                try:
+                    inserted = backfill_from_history(cfg, last_seen)
+                    logger.info(f"[One-shot] Backfill inserted {inserted} rows")
+                    total = get_total_rows(cfg.neon_conn_str)
+                    logger.info(f"[One-shot] Total rows after backfill: {total}")
+                except Exception as e:
+                    logger.warning(f"[One-shot] Backfill skipped: {e}")
             recs = fetch_history_once(cfg)
-            api_fetch_duration = (time.perf_counter() - api_fetch_start) * 1000 # in milliseconds
-
-            saved = 0
-            db_write_duration = 0
             if recs:
                 new_recs = [r for r in recs if (not last_seen) or r["period_id"] > last_seen]
-                
-                # Measure DB write
-                if new_recs:
-                    db_write_start = time.perf_counter()
-                    saved = save_to_neon(new_recs, cfg.neon_conn_str)
-                    db_write_duration = (time.perf_counter() - db_write_start) * 1000 # in milliseconds
-
+                saved = save_to_neon(new_recs, cfg.neon_conn_str) if new_recs else 0
+                logger.info(f"[One-shot] fetched {len(recs)}, new {len(new_recs)}, saved {saved}")
                 total = get_total_rows(cfg.neon_conn_str)
-                run_duration = (time.perf_counter() - run_start_time) * 1000 # in milliseconds
-                
-                logger.info(
-                    f"[One-shot] Saved: {saved} | Total rows: {total} | "
-                    f"Timing (ms): API Fetch={api_fetch_duration:.0f}, DB Read={db_read_duration:.0f}, DB Write={db_write_duration:.0f}, Total Run={run_duration:.0f}"
-                )
+                logger.info(f"[One-shot] Total rows after save: {total}")
             else:
-                logger.warning("[One-shot] no records fetched")
+                logger.info("[One-shot] no records fetched")
         except Exception as e:
             logger.error(f"[One-shot] error: {e}")
         return
-        # --- END: Added timing logic ---
-
     # Default long-running poller
     try:
         api_poll_loop(cfg)
