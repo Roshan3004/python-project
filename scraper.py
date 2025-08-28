@@ -1328,23 +1328,22 @@ def api_poll_loop(cfg: ScraperConfig):
     last_insert_ts = time.time()
     alert_sent = False
 
-    # Establish a stable tick and advance it by exactly 60s each loop to avoid
-    # accumulating 1s drift from processing time.
-    next_tick = _compute_next_tick(time.time(), cfg.scrape_offset_seconds)
     while True:
         try:
-            # Sleep until the scheduled tick; if we're behind, catch up by
-            # adding whole minutes until the tick is in the future.
+            # Calculate next tick and sleep until then
             now = time.time()
-            if now < next_tick:
-                time.sleep(next_tick - now)
-            else:
-                # If we missed the tick (e.g., long GC/network), jump forward
-                # by whole-minute increments until in the future.
-                missed = int((now - next_tick) // 60) + 1
-                next_tick += missed * 60
-                time.sleep(max(0.0, next_tick - time.time()))
+            next_tick = _compute_next_tick(now, cfg.scrape_offset_seconds)
+            
+            # If we're already past the next tick, skip ahead to the next interval
+            if now > next_tick:
+                next_tick = _compute_next_tick(next_tick, cfg.scrape_offset_seconds)
+            
+            # Sleep until the next tick
+            sleep_time = max(0.1, next_tick - time.time())
+            logger.debug(f"Next run in {sleep_time:.2f}s at {datetime.fromtimestamp(next_tick).strftime('%H:%M:%S.%f')[:-3]}")
+            time.sleep(sleep_time)
 
+            # Fetch and process data
             recs = fetch_history_once(cfg)
             if recs:
                 # Keep only unseen periods (assuming list is latest-first)
@@ -1352,49 +1351,48 @@ def api_poll_loop(cfg: ScraperConfig):
                     new_recs = [r for r in recs if r["period_id"] > last_seen]
                 else:
                     new_recs = recs
+                
                 attempted = len(new_recs)
                 saved = save_to_neon(new_recs, cfg.neon_conn_str) if new_recs else 0
+                
                 if new_recs:
                     last_seen = max(r["period_id"] for r in new_recs)
+                
                 duplicates = max(0, attempted - saved)
                 logger.info(f"Fetched {len(recs)}, new {len(new_recs)}; attempted {attempted}, saved {saved}, duplicates {duplicates}. Last seen: {last_seen}")
-                # Update alert state
+                
+                # Update alert state if we saved new data
                 if saved > 0:
                     last_insert_ts = time.time()
                     alert_sent = False
             else:
                 logger.warning("No records returned from API this round")
+                
+            # Log total rows periodically
+            try:
+                total = get_total_rows(cfg.neon_conn_str)
+                logger.info(f"Total rows so far: {total}")
+            except Exception as e:
+                logger.warning(f"Could not get total rows: {e}")
+                
+            # Check for alert conditions
+            try:
+                if cfg.alert_no_new_mins > 0 and cfg.telegram_bot_token and cfg.telegram_chat_id:
+                    minutes_since = (time.time() - last_insert_ts) / 60.0
+                    if minutes_since >= cfg.alert_no_new_mins and not alert_sent:
+                        _send_telegram_message(
+                            cfg.telegram_bot_token,
+                            cfg.telegram_chat_id,
+                            f"WinGo scraper alert: no new rows inserted for {int(minutes_since)} minutes (threshold {cfg.alert_no_new_mins}m)."
+                        )
+                        alert_sent = True
+            except Exception as e:
+                logger.warning(f"Alert check failed: {e}")
+                
         except Exception as e:
-            logger.error(f"Poll loop error: {e}")
-        try:
-            total = get_total_rows(cfg.neon_conn_str)
-            logger.info(f"Total rows so far: {total}")
-        except Exception:
-            pass
-        # Liveness alert if no inserts for alert_no_new_mins
-        try:
-            if cfg.alert_no_new_mins > 0 and cfg.telegram_bot_token and cfg.telegram_chat_id:
-                minutes_since = (time.time() - last_insert_ts) / 60.0
-                if minutes_since >= cfg.alert_no_new_mins and not alert_sent:
-                    _send_telegram_message(
-                        cfg.telegram_bot_token,
-                        cfg.telegram_chat_id,
-                        f"WinGo scraper alert: no new rows inserted for {int(minutes_since)} minutes (threshold {cfg.alert_no_new_mins}m)."
-                    )
-                    alert_sent = True
-        except Exception:
-            pass
-        # Calculate the exact next tick to maintain wall-clock alignment
-        now = time.time()
-        next_tick = _compute_next_tick(now, cfg.scrape_offset_seconds)
-        # If we're running behind, skip the next tick to catch up
-        if now > next_tick:
-            next_tick = _compute_next_tick(next_tick, cfg.scrape_offset_seconds)
-        
-        # Calculate sleep time, ensuring it's not negative
-        sleep_time = max(0.1, next_tick - time.time())
-        logger.debug(f"Next run in {sleep_time:.2f}s at {datetime.fromtimestamp(next_tick).strftime('%H:%M:%S.%f')[:-3]}")
-        time.sleep(sleep_time)
+            logger.error(f"Unexpected error in poll loop: {e}")
+            # Add a small delay before retrying to prevent tight error loops
+            time.sleep(5)
 
 def main():
     """Main entrypoint: use lightweight API poller (no Selenium)."""
