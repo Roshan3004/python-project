@@ -1339,9 +1339,10 @@ def api_poll_loop(cfg: ScraperConfig):
     TARGET_LATENCY = 0.15  # 150ms target latency after the second
     MAX_LATENCY = 0.2      # If we're later than this, resync to next interval
     
-    # Initialize timing
-    base_time = time.time()
-    next_tick = _compute_next_tick(base_time, cfg.scrape_offset_seconds, 0)
+    # Initialize timing to next interval to ensure fresh data
+    now = time.time()
+    base_time = now - (now % 60)  # Align to current minute
+    next_tick = base_time + 60 + cfg.scrape_offset_seconds + TARGET_LATENCY
     tick_count = 0
     
     while True:
@@ -1371,8 +1372,9 @@ def api_poll_loop(cfg: ScraperConfig):
             # If we're too late, resync to the next interval
             if actual_latency > MAX_LATENCY:
                 logger.warning(f"Tick {tick_count:04d} too late ({actual_latency*1000:.1f}ms), resyncing...")
-                base_time = time.time() - (time.time() % 60)  # Align to current minute
-                next_tick = base_time + 60.0 - TARGET_LATENCY  # Next full minute - latency
+                now = time.time()
+                base_time = now - (now % 60)  # Align to current minute
+                next_tick = base_time + 60.0 + cfg.scrape_offset_seconds + TARGET_LATENCY
                 tick_count = 0
                 continue
             
