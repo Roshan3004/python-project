@@ -1407,20 +1407,17 @@ def api_poll_loop(cfg: ScraperConfig):
                 if new_recs:
                     last_seen = max(r["period_id"] for r in new_recs)
                 
+                current_time = datetime.now().strftime("%H:%M:%S")
                 duplicates = max(0, attempted - saved)
-                logger.info(f"fetch: {len(recs)}")
-                if new_recs:
-                    logger.info(f"new: {len(new_recs)}")
-                if duplicates > 0:
-                    logger.info(f"duplicate: {duplicates}")
-                logger.info(f"last seen: {last_seen}")
+                logger.info(f"{current_time} - Fetched {len(recs)}, new {len(new_recs)}; attempted {attempted}, saved {saved}, duplicates {duplicates}. Last seen: {last_seen}")
                 
                 # Update alert state if we saved new data
                 if saved > 0:
                     last_insert_ts = time.time()
                     alert_sent = False
             else:
-                logger.warning("fetch: 0")
+                current_time = datetime.now().strftime("%H:%M:%S")
+                logger.warning(f"{current_time} - Fetched 0, new 0; attempted 0, saved 0, duplicates 0. Last seen: {last_seen}")
                 
             # Log total rows periodically
             try:
