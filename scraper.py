@@ -1390,6 +1390,11 @@ def api_poll_loop(cfg: ScraperConfig):
         # If we're running behind, skip the next tick to catch up
         if now > next_tick:
             next_tick = _compute_next_tick(next_tick, cfg.scrape_offset_seconds)
+        
+        # Calculate sleep time, ensuring it's not negative
+        sleep_time = max(0.1, next_tick - time.time())
+        logger.debug(f"Next run in {sleep_time:.2f}s at {datetime.fromtimestamp(next_tick).strftime('%H:%M:%S.%f')[:-3]}")
+        time.sleep(sleep_time)
 
 def main():
     """Main entrypoint: use lightweight API poller (no Selenium)."""
