@@ -1335,13 +1335,13 @@ def api_poll_loop(cfg: ScraperConfig):
     last_insert_ts = time.time()
     alert_sent = False
 
-    # Timing control with fixed latency and drift correction
-    TARGET_LATENCY = 0.15  # 150ms target latency
-    MAX_DRIFT_MS = 5.0     # Maximum allowed drift in milliseconds
+    # Timing control with fixed latency
+    TARGET_LATENCY = 0.15  # 150ms target latency after the second
+    MAX_LATENCY = 0.2      # If we're later than this, resync to next interval
     
     # Initialize timing
     base_time = time.time()
-    next_tick = _compute_next_tick(base_time, cfg.scrape_offset_seconds, TARGET_LATENCY)
+    next_tick = _compute_next_tick(base_time, cfg.scrape_offset_seconds, 0)
     tick_count = 0
     
     while True:
@@ -1364,15 +1364,23 @@ def api_poll_loop(cfg: ScraperConfig):
             actual_time = time.time()
             tick_count += 1
             
-            # Calculate expected time based on tick count
-            expected_time = base_time + (tick_count * 60.0) - TARGET_LATENCY
-            actual_latency = (actual_time - expected_time) * 1000
+            # Calculate expected time and check if we're too late
+            expected_time = base_time + (tick_count * 60.0) + TARGET_LATENCY
+            actual_latency = actual_time - expected_time
+            
+            # If we're too late, resync to the next interval
+            if actual_latency > MAX_LATENCY:
+                logger.warning(f"Tick {tick_count:04d} too late ({actual_latency*1000:.1f}ms), resyncing...")
+                base_time = time.time() - (time.time() % 60)  # Align to current minute
+                next_tick = base_time + 60.0 - TARGET_LATENCY  # Next full minute - latency
+                tick_count = 0
+                continue
             
             # Log timing info with more details
             logger.debug(
                 f"Tick {tick_count:04d} at {datetime.fromtimestamp(actual_time).strftime('%H:%M:%S.%f')[:-3]} "
-                f"(latency: {actual_latency:+.1f}ms) "
-                f"(drift: {(actual_time - expected_time - TARGET_LATENCY)*1000:+.1f}ms)"
+                f"(latency: {actual_latency*1000:+.1f}ms) "
+                f"(target: {TARGET_LATENCY*1000:.1f}ms)"
             )
             
             # Calculate next tick based on original schedule to prevent drift
