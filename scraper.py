@@ -1365,7 +1365,8 @@ def api_poll_loop(cfg: ScraperConfig):
             tick_count += 1
             
             # Calculate target time for this specific tick (aligned to minute boundary + offset)
-            target_time = (int(actual_time) // 60 + 1) * 60 + TARGET_LATENCY
+            current_minute = int(actual_time) // 60
+            target_time = (current_minute + 1) * 60 + TARGET_LATENCY
             actual_latency = actual_time - target_time
             
             # Log timing info
@@ -1375,8 +1376,8 @@ def api_poll_loop(cfg: ScraperConfig):
                 f"(target: {TARGET_LATENCY*1000:.1f}ms)"
             )
             
-            # Calculate next tick (always based on current wall time, not previous tick)
-            next_tick = (int(actual_time) // 60 + 1) * 60 - TARGET_LATENCY
+            # Calculate next tick (next minute - target latency)
+            next_tick = (current_minute + 1) * 60 + 60 - TARGET_LATENCY
             
             # Reset last_tick for next iteration
             last_tick = actual_time
