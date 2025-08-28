@@ -23,7 +23,7 @@ import requests
 
 # Configure logging with UTF-8 encoding
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG to see all messages
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("scraper.log", encoding='utf-8'),
@@ -613,15 +613,13 @@ def navigate_to_wingo(driver, cfg):
         if needs_login:
             logger.info("Performing login...")
             login_success = perform_login(driver, cfg)
-            if recs:
-                new_recs = [r for r in recs if r["period_id"] > last_seen] if last_seen else recs
-                saved = save_to_neon(new_recs, cfg.neon_conn_str) if new_recs else 0
-                duplicates = max(0, len(new_recs) - saved)
-                logger.info(f"Fetched {len(recs)}, new {len(new_recs)}; attempted {len(new_recs)}, saved {saved}, duplicates {duplicates}. Last seen: {last_seen}")
-                if new_recs:
-                    last_seen = max(r["period_id"] for r in new_recs)
-            else:
-                logger.info("No new records fetched")
+            if not login_success:
+                logger.error("✗ Login failed")
+                return False
+            logger.info("✓ Login completed")
+            time.sleep(3)
+        else:
+            logger.info("✓ No login required")
         
         # Step 5: Switch from WinGo 30sec to WinGo 1min
         logger.info("Step 5: Switching to WinGo 1min...")
@@ -1341,10 +1339,9 @@ def api_poll_loop(cfg: ScraperConfig):
     TARGET_LATENCY = 0.15  # 150ms target latency after the second
     MAX_LATENCY = 0.2      # If we're later than this, resync to next interval
     
-    # Initialize timing to next interval to ensure fresh data
-    now = time.time()
-    base_time = now - (now % 60)  # Align to current minute
-    next_tick = base_time + 60 + cfg.scrape_offset_seconds + TARGET_LATENCY
+    # Initialize timing
+    base_time = time.time()
+    next_tick = _compute_next_tick(base_time, cfg.scrape_offset_seconds, 0)
     tick_count = 0
     
     while True:
@@ -1374,16 +1371,16 @@ def api_poll_loop(cfg: ScraperConfig):
             # If we're too late, resync to the next interval
             if actual_latency > MAX_LATENCY:
                 logger.warning(f"Tick {tick_count:04d} too late ({actual_latency*1000:.1f}ms), resyncing...")
-                now = time.time()
-                base_time = now - (now % 60)  # Align to current minute
-                next_tick = base_time + 60.0 + cfg.scrape_offset_seconds + TARGET_LATENCY
+                base_time = time.time() - (time.time() % 60)  # Align to current minute
+                next_tick = base_time + 60.0 - TARGET_LATENCY  # Next full minute - latency
                 tick_count = 0
                 continue
             
-            # Log timing info (debug level)
+            # Log timing info with more details
             logger.debug(
                 f"Tick {tick_count:04d} at {datetime.fromtimestamp(actual_time).strftime('%H:%M:%S.%f')[:-3]} "
-                f"(latency: {actual_latency*1000:+.1f}ms)"
+                f"(latency: {actual_latency*1000:+.1f}ms) "
+                f"(target: {TARGET_LATENCY*1000:.1f}ms)"
             )
             
             # Calculate next tick based on original schedule to prevent drift
@@ -1407,17 +1404,15 @@ def api_poll_loop(cfg: ScraperConfig):
                 if new_recs:
                     last_seen = max(r["period_id"] for r in new_recs)
                 
-                current_time = datetime.now().strftime("%H:%M:%S")
                 duplicates = max(0, attempted - saved)
-                logger.info(f"{current_time} - Fetched {len(recs)}, new {len(new_recs)}; attempted {attempted}, saved {saved}, duplicates {duplicates}. Last seen: {last_seen}")
+                logger.info(f"Fetched {len(recs)}, new {len(new_recs)}; attempted {attempted}, saved {saved}, duplicates {duplicates}. Last seen: {last_seen}")
                 
                 # Update alert state if we saved new data
                 if saved > 0:
                     last_insert_ts = time.time()
                     alert_sent = False
             else:
-                current_time = datetime.now().strftime("%H:%M:%S")
-                logger.warning(f"{current_time} - Fetched 0, new 0; attempted 0, saved 0, duplicates 0. Last seen: {last_seen}")
+                logger.warning("No records returned from API this round")
                 
             # Log total rows periodically
             try:
