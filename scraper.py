@@ -1355,19 +1355,21 @@ def api_poll_loop(cfg: ScraperConfig):
                 while time.time() < next_tick:
                     pass  # Busy wait for last few ms
             
-            # If we're late, log it and adjust
-            elif now > next_tick + 1.0:  # More than 1s late
-                ticks_missed = int((now - next_tick) / 60) + 1
-                logger.warning(f"Missed {ticks_missed} ticks, jumping to next interval")
-            
-            # Set next tick exactly 60s after the scheduled time
-            next_tick += 60.0
-            
-            # Log timing info for monitoring
+            # Log timing info for monitoring before we update next_tick
             actual_time = time.time()
             drift_ms = (actual_time - next_tick) * 1000
             logger.debug(f"Tick at {datetime.fromtimestamp(actual_time).strftime('%H:%M:%S.%f')[:-3]} "
                        f"(drift: {drift_ms:+.1f}ms)")
+            
+            # If we're late, log it and adjust
+            if now > next_tick + 1.0:  # More than 1s late
+                ticks_missed = int((now - next_tick) / 60) + 1
+                logger.warning(f"Missed {ticks_missed} ticks, jumping to next interval")
+                # Reset next_tick to the next interval
+                next_tick = _compute_next_tick(now, cfg.scrape_offset_seconds)
+            else:
+                # Set next tick exactly 60s after the scheduled time
+                next_tick += 60.0
             
             # Reset last_tick for next iteration
             last_tick = actual_time
