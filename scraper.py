@@ -1300,18 +1300,19 @@ def backfill_from_history(cfg: ScraperConfig, last_seen: str | None, max_pages: 
         last_seen = max(r["period_id"] for r in new_recs)
     return inserted_total
 
-def _compute_next_tick(now_epoch: float, offset_seconds: int) -> float:
-    """Return epoch seconds for the next minute boundary + offset.
+def _compute_next_tick(now_epoch: float, offset_seconds: int, target_latency: float = 0.15) -> float:
+    """Return epoch seconds for the next minute boundary + offset - target_latency.
     
     Args:
         now_epoch: Current time in seconds since epoch
         offset_seconds: Seconds after the minute to schedule the next tick
+        target_latency: Desired fixed latency in seconds (default: 0.15s)
         
     Returns:
         float: Timestamp of the next scheduled tick
     """
     next_minute = (int(now_epoch) // 60 + 1) * 60  # Next whole minute
-    next_tick = next_minute + max(0, int(offset_seconds))
+    next_tick = next_minute + max(0, int(offset_seconds)) - target_latency
     return float(next_tick)
 
 def api_poll_loop(cfg: ScraperConfig):
@@ -1334,42 +1335,48 @@ def api_poll_loop(cfg: ScraperConfig):
     last_insert_ts = time.time()
     alert_sent = False
 
-    # Timing control
-    last_tick = time.time()
-    next_tick = _compute_next_tick(last_tick, cfg.scrape_offset_seconds)
+    # Timing control with fixed latency and drift correction
+    TARGET_LATENCY = 0.15  # 150ms target latency
+    MAX_DRIFT_MS = 5.0     # Maximum allowed drift in milliseconds
+    
+    # Initialize timing
+    base_time = time.time()
+    next_tick = _compute_next_tick(base_time, cfg.scrape_offset_seconds, TARGET_LATENCY)
+    tick_count = 0
     
     while True:
         try:
-            # Calculate time until next tick with a small buffer for system scheduling
+            # Calculate time until next tick
             now = time.time()
             time_until_tick = next_tick - now
             
-            # Sleep in small chunks to maintain responsiveness and precision
-            if time_until_tick > 0.1:  # Only sleep if we have meaningful time left
-                chunk_size = min(0.1, time_until_tick)
-                time.sleep(chunk_size)
-                continue  # Go back and check time again
+            # Sleep in small chunks to maintain responsiveness
+            if time_until_tick > 0.1:
+                time.sleep(min(0.1, time_until_tick))
+                continue
                 
-            # If we're slightly early, busy-wait the last few ms for precision
-            elif time_until_tick > 0:
-                while time.time() < next_tick:
-                    pass  # Busy wait for last few ms
+            # Busy-wait for the last few ms for precision
+            start_busy_wait = time.time()
+            while time.time() < next_tick:
+                pass
             
-            # Log timing info for monitoring before we update next_tick
+            # Calculate actual timing
             actual_time = time.time()
-            drift_ms = (actual_time - next_tick) * 1000
-            logger.debug(f"Tick at {datetime.fromtimestamp(actual_time).strftime('%H:%M:%S.%f')[:-3]} "
-                       f"(drift: {drift_ms:+.1f}ms)")
+            tick_count += 1
             
-            # If we're late, log it and adjust
-            if now > next_tick + 1.0:  # More than 1s late
-                ticks_missed = int((now - next_tick) / 60) + 1
-                logger.warning(f"Missed {ticks_missed} ticks, jumping to next interval")
-                # Reset next_tick to the next interval
-                next_tick = _compute_next_tick(now, cfg.scrape_offset_seconds)
-            else:
-                # Set next tick exactly 60s after the scheduled time
-                next_tick += 60.0
+            # Calculate expected time based on tick count
+            expected_time = base_time + (tick_count * 60.0) - TARGET_LATENCY
+            actual_latency = (actual_time - expected_time) * 1000
+            
+            # Log timing info with more details
+            logger.debug(
+                f"Tick {tick_count:04d} at {datetime.fromtimestamp(actual_time).strftime('%H:%M:%S.%f')[:-3]} "
+                f"(latency: {actual_latency:+.1f}ms) "
+                f"(drift: {(actual_time - expected_time - TARGET_LATENCY)*1000:+.1f}ms)"
+            )
+            
+            # Calculate next tick based on original schedule to prevent drift
+            next_tick = base_time + ((tick_count + 1) * 60.0) - TARGET_LATENCY
             
             # Reset last_tick for next iteration
             last_tick = actual_time
