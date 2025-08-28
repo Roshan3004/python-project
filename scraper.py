@@ -1360,31 +1360,23 @@ def api_poll_loop(cfg: ScraperConfig):
             while time.time() < next_tick:
                 pass
             
-            # Calculate actual timing
+            # Record actual time and calculate next target
             actual_time = time.time()
             tick_count += 1
             
-            # Calculate expected time and check if we're too late
-            expected_time = base_time + (tick_count * 60.0) + TARGET_LATENCY
-            actual_latency = actual_time - expected_time
+            # Calculate target time for this specific tick (aligned to minute boundary + offset)
+            target_time = (int(actual_time) // 60 + 1) * 60 + TARGET_LATENCY
+            actual_latency = actual_time - target_time
             
-            # If we're too late, resync to the next interval
-            if actual_latency > MAX_LATENCY:
-                logger.warning(f"Tick {tick_count:04d} too late ({actual_latency*1000:.1f}ms), resyncing...")
-                base_time = time.time() - (time.time() % 60)  # Align to current minute
-                next_tick = base_time + 60.0 - TARGET_LATENCY  # Next full minute - latency
-                tick_count = 0
-                continue
-            
-            # Log timing info with more details
+            # Log timing info
             logger.debug(
                 f"Tick {tick_count:04d} at {datetime.fromtimestamp(actual_time).strftime('%H:%M:%S.%f')[:-3]} "
                 f"(latency: {actual_latency*1000:+.1f}ms) "
                 f"(target: {TARGET_LATENCY*1000:.1f}ms)"
             )
             
-            # Calculate next tick based on original schedule to prevent drift
-            next_tick = base_time + ((tick_count + 1) * 60.0) - TARGET_LATENCY
+            # Calculate next tick (always based on current wall time, not previous tick)
+            next_tick = (int(actual_time) // 60 + 1) * 60 - TARGET_LATENCY
             
             # Reset last_tick for next iteration
             last_tick = actual_time
