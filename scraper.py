@@ -1300,14 +1300,13 @@ def backfill_from_history(cfg: ScraperConfig, last_seen: str | None, max_pages: 
         last_seen = max(r["period_id"] for r in new_recs)
     return inserted_total
 
-def _sleep_until_next_tick(offset_seconds: int) -> None:
-    """Sleep until the next wall-clock minute plus offset_seconds (mm:+offset)."""
-    now = time.time()
-    # Start of next minute (epoch seconds rounded up to next minute)
-    next_minute = int(now // 60 + 1) * 60
-    wake = next_minute + max(0, int(offset_seconds))
-    sleep_s = max(0.0, wake - now)
-    time.sleep(sleep_s)
+def _compute_next_tick(now_epoch: float, offset_seconds: int) -> float:
+    """Return epoch seconds for the next minute boundary + offset.
+
+    Example: if now=12:34:18 and offset=10 → next tick = 12:35:10.
+    """
+    next_minute = int(now_epoch // 60 + 1) * 60
+    return float(next_minute + max(0, int(offset_seconds)))
 
 def api_poll_loop(cfg: ScraperConfig):
     """Poll the API aligned to wall clock: every minute at mm:+offset.
@@ -1329,10 +1328,23 @@ def api_poll_loop(cfg: ScraperConfig):
     last_insert_ts = time.time()
     alert_sent = False
 
+    # Establish a stable tick and advance it by exactly 60s each loop to avoid
+    # accumulating 1s drift from processing time.
+    next_tick = _compute_next_tick(time.time(), cfg.scrape_offset_seconds)
     while True:
         try:
-            # Align to wall clock before each fetch
-            _sleep_until_next_tick(cfg.scrape_offset_seconds)
+            # Sleep until the scheduled tick; if we're behind, catch up by
+            # adding whole minutes until the tick is in the future.
+            now = time.time()
+            if now < next_tick:
+                time.sleep(next_tick - now)
+            else:
+                # If we missed the tick (e.g., long GC/network), jump forward
+                # by whole-minute increments until in the future.
+                missed = int((now - next_tick) // 60) + 1
+                next_tick += missed * 60
+                time.sleep(max(0.0, next_tick - time.time()))
+
             recs = fetch_history_once(cfg)
             if recs:
                 # Keep only unseen periods (assuming list is latest-first)
@@ -1372,7 +1384,8 @@ def api_poll_loop(cfg: ScraperConfig):
                     alert_sent = True
         except Exception:
             pass
-        # No fixed sleep here; next loop aligns to the next minute tick
+        # Schedule the next tick exactly +60s from the previous tick
+        next_tick += 60.0
 
 def main():
     """Main entrypoint: use lightweight API poller (no Selenium)."""
