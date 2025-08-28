@@ -23,7 +23,7 @@ import requests
 
 # Configure logging with UTF-8 encoding
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Changed to DEBUG to see all messages
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("scraper.log", encoding='utf-8'),
@@ -613,13 +613,15 @@ def navigate_to_wingo(driver, cfg):
         if needs_login:
             logger.info("Performing login...")
             login_success = perform_login(driver, cfg)
-            if not login_success:
-                logger.error("✗ Login failed")
-                return False
-            logger.info("✓ Login completed")
-            time.sleep(3)
-        else:
-            logger.info("✓ No login required")
+            if recs:
+                new_recs = [r for r in recs if r["period_id"] > last_seen] if last_seen else recs
+                saved = save_to_neon(new_recs, cfg.neon_conn_str) if new_recs else 0
+                duplicates = max(0, len(new_recs) - saved)
+                logger.info(f"Fetched {len(recs)}, new {len(new_recs)}; attempted {len(new_recs)}, saved {saved}, duplicates {duplicates}. Last seen: {last_seen}")
+                if new_recs:
+                    last_seen = max(r["period_id"] for r in new_recs)
+            else:
+                logger.info("No new records fetched")
         
         # Step 5: Switch from WinGo 30sec to WinGo 1min
         logger.info("Step 5: Switching to WinGo 1min...")
@@ -1378,11 +1380,10 @@ def api_poll_loop(cfg: ScraperConfig):
                 tick_count = 0
                 continue
             
-            # Log timing info with more details
+            # Log timing info (debug level)
             logger.debug(
                 f"Tick {tick_count:04d} at {datetime.fromtimestamp(actual_time).strftime('%H:%M:%S.%f')[:-3]} "
-                f"(latency: {actual_latency*1000:+.1f}ms) "
-                f"(target: {TARGET_LATENCY*1000:.1f}ms)"
+                f"(latency: {actual_latency*1000:+.1f}ms)"
             )
             
             # Calculate next tick based on original schedule to prevent drift
@@ -1407,14 +1408,19 @@ def api_poll_loop(cfg: ScraperConfig):
                     last_seen = max(r["period_id"] for r in new_recs)
                 
                 duplicates = max(0, attempted - saved)
-                logger.info(f"Fetched {len(recs)}, new {len(new_recs)}; attempted {attempted}, saved {saved}, duplicates {duplicates}. Last seen: {last_seen}")
+                logger.info(f"fetch: {len(recs)}")
+                if new_recs:
+                    logger.info(f"new: {len(new_recs)}")
+                if duplicates > 0:
+                    logger.info(f"duplicate: {duplicates}")
+                logger.info(f"last seen: {last_seen}")
                 
                 # Update alert state if we saved new data
                 if saved > 0:
                     last_insert_ts = time.time()
                     alert_sent = False
             else:
-                logger.warning("No records returned from API this round")
+                logger.warning("fetch: 0")
                 
             # Log total rows periodically
             try:
