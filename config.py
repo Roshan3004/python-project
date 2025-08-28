@@ -47,7 +47,9 @@ class ScraperConfig:
     # ====== TIMING ======
     page_load_timeout: int = 20  # Increased for slow loading
     element_timeout: int = 15   # More generous waits
-    scrape_interval: int = int(os.getenv("SCRAPE_INTERVAL", "600"))
+    scrape_interval: int = int(os.getenv("SCRAPE_INTERVAL", "60"))
+    # Wall-clock alignment: seconds after the minute to poll (e.g., 10 => mm:+10s)
+    scrape_offset_seconds: int = int(os.getenv("SCRAPE_OFFSET_SECONDS", "10"))
 
     # ====== ALERTING ======
     # Telegram Bot settings

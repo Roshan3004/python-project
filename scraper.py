@@ -1300,8 +1300,21 @@ def backfill_from_history(cfg: ScraperConfig, last_seen: str | None, max_pages: 
         last_seen = max(r["period_id"] for r in new_recs)
     return inserted_total
 
+def _sleep_until_next_tick(offset_seconds: int) -> None:
+    """Sleep until the next wall-clock minute plus offset_seconds (mm:+offset)."""
+    now = time.time()
+    # Start of next minute (epoch seconds rounded up to next minute)
+    next_minute = int(now // 60 + 1) * 60
+    wake = next_minute + max(0, int(offset_seconds))
+    sleep_s = max(0.0, wake - now)
+    time.sleep(sleep_s)
+
 def api_poll_loop(cfg: ScraperConfig):
-    """Poll the API every cfg.scrape_interval seconds and save new periods."""
+    """Poll the API aligned to wall clock: every minute at mm:+offset.
+
+    This avoids drift from variable fetch durations. If a fetch takes 8–12s,
+    the next cycle still begins at the next minute boundary + offset.
+    """
     logger.info("=== Starting API-based WinGo 1-Min poller ===")
     # Initialize from DB so we can recover from downtime
     last_seen = get_db_last_seen(cfg.neon_conn_str)
@@ -1318,6 +1331,8 @@ def api_poll_loop(cfg: ScraperConfig):
 
     while True:
         try:
+            # Align to wall clock before each fetch
+            _sleep_until_next_tick(cfg.scrape_offset_seconds)
             recs = fetch_history_once(cfg)
             if recs:
                 # Keep only unseen periods (assuming list is latest-first)
@@ -1357,8 +1372,7 @@ def api_poll_loop(cfg: ScraperConfig):
                     alert_sent = True
         except Exception:
             pass
-        logger.info(f"Sleeping {cfg.scrape_interval}s before next poll")
-        time.sleep(cfg.scrape_interval)
+        # No fixed sleep here; next loop aligns to the next minute tick
 
 def main():
     """Main entrypoint: use lightweight API poller (no Selenium)."""
