@@ -1302,11 +1302,17 @@ def backfill_from_history(cfg: ScraperConfig, last_seen: str | None, max_pages: 
 
 def _compute_next_tick(now_epoch: float, offset_seconds: int) -> float:
     """Return epoch seconds for the next minute boundary + offset.
-
-    Example: if now=12:34:18 and offset=10 → next tick = 12:35:10.
+    
+    Args:
+        now_epoch: Current time in seconds since epoch
+        offset_seconds: Seconds after the minute to schedule the next tick
+        
+    Returns:
+        float: Timestamp of the next scheduled tick
     """
-    next_minute = int(now_epoch // 60 + 1) * 60
-    return float(next_minute + max(0, int(offset_seconds)))
+    next_minute = (int(now_epoch) // 60 + 1) * 60  # Next whole minute
+    next_tick = next_minute + max(0, int(offset_seconds))
+    return float(next_tick)
 
 def api_poll_loop(cfg: ScraperConfig):
     """Poll the API aligned to wall clock: every minute at mm:+offset.
@@ -1328,20 +1334,36 @@ def api_poll_loop(cfg: ScraperConfig):
     last_insert_ts = time.time()
     alert_sent = False
 
+    # Track timing statistics
+    last_tick = time.time()
+    drift_compensation = 0.0
+    
     while True:
         try:
-            # Calculate next tick and sleep until then
+            # Calculate next tick with drift compensation
             now = time.time()
-            next_tick = _compute_next_tick(now, cfg.scrape_offset_seconds)
+            next_tick = _compute_next_tick(now, cfg.scrape_offset_seconds) + drift_compensation
             
             # If we're already past the next tick, skip ahead to the next interval
             if now > next_tick:
-                next_tick = _compute_next_tick(next_tick, cfg.scrape_offset_seconds)
+                # Calculate how many ticks we missed
+                ticks_missed = int((now - next_tick) / 60) + 1
+                next_tick = _compute_next_tick(now + (ticks_missed * 60), cfg.scrape_offset_seconds)
+                logger.warning(f"Missed {ticks_missed} ticks, jumping to {datetime.fromtimestamp(next_tick).strftime('%H:%M:%S.%f')[:-3]}")
             
-            # Sleep until the next tick
-            sleep_time = max(0.1, next_tick - time.time())
-            logger.debug(f"Next run in {sleep_time:.2f}s at {datetime.fromtimestamp(next_tick).strftime('%H:%M:%S.%f')[:-3]}")
-            time.sleep(sleep_time)
+            # Calculate precise sleep time
+            sleep_time = max(0.0, next_tick - time.time())
+            if sleep_time > 0:
+                start_sleep = time.perf_counter()
+                time.sleep(sleep_time)
+                actual_sleep = time.perf_counter() - start_sleep
+                # Calculate drift (positive means we overslept)
+                drift = actual_sleep - sleep_time
+                # Apply small correction (dampened to avoid overcorrection)
+                drift_compensation = -drift * 0.5  # Dampen the correction
+                logger.debug(f"Sleep target: {sleep_time*1000:.1f}ms, actual: {actual_sleep*1000:.1f}ms, drift: {drift*1000:+.1f}ms, compensation: {drift_compensation*1000:+.1f}ms")
+            
+            last_tick = time.time()
 
             # Fetch and process data
             recs = fetch_history_once(cfg)
