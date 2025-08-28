@@ -1384,8 +1384,12 @@ def api_poll_loop(cfg: ScraperConfig):
                     alert_sent = True
         except Exception:
             pass
-        # Schedule the next tick exactly +60s from the previous tick
-        next_tick += 60.0
+        # Calculate the exact next tick to maintain wall-clock alignment
+        now = time.time()
+        next_tick = _compute_next_tick(now, cfg.scrape_offset_seconds)
+        # If we're running behind, skip the next tick to catch up
+        if now > next_tick:
+            next_tick = _compute_next_tick(next_tick, cfg.scrape_offset_seconds)
 
 def main():
     """Main entrypoint: use lightweight API poller (no Selenium)."""
