@@ -1334,36 +1334,43 @@ def api_poll_loop(cfg: ScraperConfig):
     last_insert_ts = time.time()
     alert_sent = False
 
-    # Track timing statistics
+    # Timing control
     last_tick = time.time()
-    drift_compensation = 0.0
+    next_tick = _compute_next_tick(last_tick, cfg.scrape_offset_seconds)
     
     while True:
         try:
-            # Calculate next tick with drift compensation
+            # Calculate time until next tick with a small buffer for system scheduling
             now = time.time()
-            next_tick = _compute_next_tick(now, cfg.scrape_offset_seconds) + drift_compensation
+            time_until_tick = next_tick - now
             
-            # If we're already past the next tick, skip ahead to the next interval
-            if now > next_tick:
-                # Calculate how many ticks we missed
+            # Sleep in small chunks to maintain responsiveness and precision
+            if time_until_tick > 0.1:  # Only sleep if we have meaningful time left
+                chunk_size = min(0.1, time_until_tick)
+                time.sleep(chunk_size)
+                continue  # Go back and check time again
+                
+            # If we're slightly early, busy-wait the last few ms for precision
+            elif time_until_tick > 0:
+                while time.time() < next_tick:
+                    pass  # Busy wait for last few ms
+            
+            # If we're late, log it and adjust
+            elif now > next_tick + 1.0:  # More than 1s late
                 ticks_missed = int((now - next_tick) / 60) + 1
-                next_tick = _compute_next_tick(now + (ticks_missed * 60), cfg.scrape_offset_seconds)
-                logger.warning(f"Missed {ticks_missed} ticks, jumping to {datetime.fromtimestamp(next_tick).strftime('%H:%M:%S.%f')[:-3]}")
+                logger.warning(f"Missed {ticks_missed} ticks, jumping to next interval")
             
-            # Calculate precise sleep time
-            sleep_time = max(0.0, next_tick - time.time())
-            if sleep_time > 0:
-                start_sleep = time.perf_counter()
-                time.sleep(sleep_time)
-                actual_sleep = time.perf_counter() - start_sleep
-                # Calculate drift (positive means we overslept)
-                drift = actual_sleep - sleep_time
-                # Apply small correction (dampened to avoid overcorrection)
-                drift_compensation = -drift * 0.5  # Dampen the correction
-                logger.debug(f"Sleep target: {sleep_time*1000:.1f}ms, actual: {actual_sleep*1000:.1f}ms, drift: {drift*1000:+.1f}ms, compensation: {drift_compensation*1000:+.1f}ms")
+            # Set next tick exactly 60s after the scheduled time
+            next_tick += 60.0
             
-            last_tick = time.time()
+            # Log timing info for monitoring
+            actual_time = time.time()
+            drift_ms = (actual_time - next_tick) * 1000
+            logger.debug(f"Tick at {datetime.fromtimestamp(actual_time).strftime('%H:%M:%S.%f')[:-3]} "
+                       f"(drift: {drift_ms:+.1f}ms)")
+            
+            # Reset last_tick for next iteration
+            last_tick = actual_time
 
             # Fetch and process data
             recs = fetch_history_once(cfg)
