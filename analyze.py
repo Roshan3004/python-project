@@ -97,6 +97,44 @@ def analyze_big_small(df: pd.DataFrame, lookback: int = 60) -> Tuple[Dict[str,fl
     reason = f"freq={p_big_freq:.2f}/{p_small_freq:.2f}, streak={streak}, markov_BIG={mkv.get('BIG',0.5):.2f}"
     return {"BIG": p_big, "SMALL": p_small}, conf, reason
 
+# ====== Cross-run deduping support (reservation table) ======
+def reserve_alert_slot(conn_str: str, target_period: str, signal_type: str) -> bool:
+    """Attempt to reserve (target_period, signal_type) before sending Telegram.
+
+    Returns True if reservation inserted (i.e., we are first), False if a
+    concurrent/previous run already reserved this slot.
+    """
+    try:
+        import psycopg2
+        with psycopg2.connect(conn_str) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS alert_reservations (
+                      id SERIAL PRIMARY KEY,
+                      target_period VARCHAR(50) NOT NULL,
+                      signal_type VARCHAR(16) NOT NULL,
+                      created_at timestamptz DEFAULT now(),
+                      UNIQUE(target_period, signal_type)
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    INSERT INTO alert_reservations(target_period, signal_type)
+                    VALUES (%s, %s)
+                    ON CONFLICT (target_period, signal_type) DO NOTHING
+                    RETURNING id;
+                    """,
+                    (str(target_period), str(signal_type).upper()),
+                )
+                row = cur.fetchone()
+                conn.commit()
+                return row is not None
+    except Exception:
+        # On any DB error, fail-open (allow send) to avoid losing signals
+        return True
+
 def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
     df = df.dropna(subset=["period_id", "number", "color"])
@@ -118,7 +156,7 @@ def load_neon(conn_str: str, limit: int = 1500) -> pd.DataFrame:
     conn.close()
     return df.sort_values("period_id")
 
-def ensure_fresh_neon_data(cfg: ScraperConfig, limit: int, fresh_seconds: int = 35, max_wait_seconds: int = 30) -> pd.DataFrame:
+def ensure_fresh_neon_data(cfg: ScraperConfig, limit: int, fresh_seconds: int = 20, max_wait_seconds: int = 12) -> pd.DataFrame:
     """Reload Neon until the newest row is fresh enough or max wait reached.
 
     fresh_seconds: how recent the newest scraped_at must be relative to now (UTC)
@@ -138,8 +176,8 @@ def ensure_fresh_neon_data(cfg: ScraperConfig, limit: int, fresh_seconds: int = 
                 return df
         if waited >= max_wait_seconds:
             return df
-        time.sleep(5)
-        waited += 5
+        time.sleep(3)  # Reduced from 5s to 3s
+        waited += 3
 
 def log_alert_to_neon(conn_str: str,
                       anchor_period_id: str,
@@ -439,7 +477,6 @@ def format_betting_alert(signal: dict, betting_period: str, accuracy: float) -> 
         if len(betting_period) >= 12:
             target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
         else:
-            # Fallback: next minute
             target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     except Exception:
         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
@@ -461,7 +498,7 @@ def format_betting_alert(signal: dict, betting_period: str, accuracy: float) -> 
     
     return msg
 
-def ensure_min_time_buffer(df: pd.DataFrame, betting_period: str, min_buffer_seconds: int = 35) -> str:
+def ensure_min_time_buffer(df: pd.DataFrame, betting_period: str, min_buffer_seconds: int = 20) -> str:
     """If the computed betting_period starts in less than `min_buffer_seconds`,
     shift it forward by one more minute to guarantee user has time to bet.
     Works with both numeric-only ids and ids that start with YYYYMMDDHHMM.
@@ -802,63 +839,55 @@ def backtest_momentum_system(df: pd.DataFrame, lookback: int = 300) -> float:
     return correct_predictions / total_predictions if total_predictions > 0 else 0.5
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--source", choices=["csv", "db"], default="db")
-    ap.add_argument("--path", default="data/history.csv")
-    ap.add_argument("--limit", type=int, default=2000)
-    ap.add_argument("--enable_alert", action="store_true")
-    ap.add_argument("--log_to_db", action="store_true")
-    ap.add_argument("--color_prob_threshold", type=float, default=0.60)
-    ap.add_argument("--min_sources", type=int, default=1)
-    ap.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
-                   default="balanced", help="Use preset configuration for signal frequency")
-    ap.add_argument("--max_signals", type=int, default=5, help="Maximum signals per analysis run")
-    args = ap.parse_args()
-
-    # Load preset configuration if specified
-    if args.preset != "balanced":
-        preset_config = get_preset_config(args.preset)
-        print(f"Using {args.preset} preset configuration:")
-        for method, threshold in preset_config.items():
-            print(f"  {method}: {threshold}")
-        print()
-
+    parser = argparse.ArgumentParser(description="WinGo Momentum Analysis System")
+    parser.add_argument("--source", choices=["csv", "db"], default="db", help="Data source")
+    parser.add_argument("--csv_path", default="game_history.csv", help="CSV file path")
+    parser.add_argument("--limit", type=int, default=2000, help="Number of rows to load")
+    parser.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
+                       default="balanced", help="Signal frequency preset")
+    parser.add_argument("--max_signals", type=int, default=3, help="Maximum signals per run")
+    parser.add_argument("--color_prob_threshold", type=float, default=0.68, help="Minimum confidence for color signals")
+    parser.add_argument("--min_sources", type=int, default=2, help="Minimum sources for ensemble")
+    parser.add_argument("--enable_alert", action="store_true", help="Enable Telegram alerts")
+    parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
+    parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
+    args = parser.parse_args()
+    
+    print("🚀 WinGo Momentum Analysis System")
+    print("=" * 50)
+    print(f"📊 Source: {args.source}")
+    print(f"⚙️  Preset: {args.preset}")
+    print(f"🎯 Max Signals: {args.max_signals}")
+    print(f"📈 Confidence Threshold: {args.color_prob_threshold}")
+    print(f"🔧 Fast Mode: {args.fast_mode}")
+    print("=" * 50)
+    
     # Load data
     try:
         if args.source == "csv":
-            df = load_csv(args.path)
+            df = load_csv(args.csv_path)
         else:
             cfg = ScraperConfig()
-            # wait for fresh row if scraper is late
-            df = ensure_fresh_neon_data(cfg, limit=args.limit, fresh_seconds=35, max_wait_seconds=30)
-
-        if df is None or df.empty:
-            print("❌ No data loaded. Check database connection or CSV file.")
-            return
+            
+            # Use faster settings in fast mode
+            if args.fast_mode:
+                fresh_seconds = 15  # Reduced from 20
+                max_wait = 8        # Reduced from 10
+                print("⚡ Fast mode enabled - reduced delays for quicker alerts")
+            else:
+                fresh_seconds = 20  # Reduced from 25
+                max_wait = 12       # Reduced from 15
+            
+            df = ensure_fresh_neon_data(cfg, args.limit, fresh_seconds, max_wait)
+        
+        print(f"📊 Loaded {len(df)} rounds of data")
         
         if len(df) < 100:
-            print(f"⚠️  Insufficient data: {len(df)} rows. Need at least 100.")
-            print("   The system will work better with more historical data.")
-            if len(df) < 50:
-                print("   Consider waiting for more data before running analysis.")
-                return
-    except Exception as e:
-        print(f"❌ Error loading data: {e}")
-        print("   Check your database connection and credentials.")
-        return
-
-    print(f"=== WinGo Momentum Analysis ===")
-    print(f"Data loaded: {len(df)} rows")
-    print(f"Analysis preset: {args.preset}")
-    print(f"Max signals per run: {args.max_signals}")
-    print(f"Data source: {args.source}")
-    print(f"Data limit: {args.limit}")
-    print()
-    
-    # Detect strong signals with preset configuration
-    try:
+            print("❌ Insufficient data for analysis (need at least 100 rounds)")
+            return
+        
+        # Detect signals
         if args.preset != "balanced":
-            # Use preset thresholds
             preset_config = get_preset_config(args.preset)
             if not preset_config:
                 print(f"❌ Invalid preset: {args.preset}")
@@ -928,15 +957,30 @@ def main():
         # Sort signals by confidence to prioritize strongest
         signals = sorted(signals, key=lambda x: x["confidence"], reverse=True)
         
-        # Only send alert for the STRONGEST signal to avoid confusion
+        # Prefer SIZE signal if its confidence >= color confidence + margin
+        prefer_size_margin = 0.03
+        best_signal = None
         if signals:
-            best_signal = signals[0]
+            top = signals[0]
+            top_color = next((s for s in signals if s["type"] == "color"), None)
+            top_size = next((s for s in signals if s["type"] == "size"), None)
+            if top_color and top_size and (top_size["confidence"] >= top_color["confidence"] + prefer_size_margin):
+                best_signal = top_size
+            else:
+                best_signal = top
             
             # Only alert if confidence is truly high
             if best_signal["confidence"] >= alert_threshold:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 betting_period = get_next_betting_period(df)
-                betting_period = ensure_min_time_buffer(df, betting_period, min_buffer_seconds=35)
+                
+                # Use faster buffer in fast mode
+                if args.fast_mode:
+                    min_buffer = 15  # Reduced from 20
+                else:
+                    min_buffer = 20  # Reduced from 25
+                
+                betting_period = ensure_min_time_buffer(df, betting_period, min_buffer_seconds=min_buffer)
                 
                 # Create unique alert key to prevent duplicates
                 if best_signal["type"] == "color":
@@ -944,7 +988,13 @@ def main():
                 else:
                     alert_key = f"{betting_period}_{best_signal['size']}_{best_signal['method']}"
                 
-                # Skip if we already sent this alert
+                # Cross-run reservation to dedupe globally by (period, type)
+                reserved = reserve_alert_slot(cfg.neon_conn_str, betting_period,
+                                              ("COLOR" if best_signal["type"] == "color" else "SIZE"))
+                if not reserved:
+                    print(f"Skipping alert due to existing reservation for {betting_period} {best_signal['type']}")
+                    return
+                # Also dedupe within this run
                 if alert_key in sent_alerts:
                     print(f"Skipping duplicate alert for {alert_key}")
                     return
@@ -1001,6 +1051,7 @@ def main():
         print(f"🎯 Signals detected: {len(signals)}")
         print(f"📱 Alerts sent: {len(sent_alerts)}")
         print(f"⚙️  Preset used: {args.preset}")
+        print(f"🔧 Fast mode: {args.fast_mode}")
         print(f"🎲 Next betting period: {get_next_betting_period(df)}")
         print(f"⏰ Analysis completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("="*50)
@@ -1009,7 +1060,7 @@ def main():
         if args.enable_alert and signals:
             print("\n💡 BETTING INSTRUCTIONS:")
             print("1. Wait for the NEXT round to start")
-            print("2. Place your bet on the indicated color")
+            print("2. Place your bet on the indicated color/size")
             print("3. Bet within 30 seconds of round start for best timing")
             print("4. Monitor results and adjust strategy as needed")
     
@@ -1019,6 +1070,7 @@ def main():
     print(f"   - Signals detected: {len(signals)}")
     print(f"   - System accuracy: {accuracy:.1%}")
     print(f"   - Preset used: {args.preset}")
+    print(f"   - Fast mode: {args.fast_mode}")
     print(f"   - Max signals: {args.max_signals}")
 
 if __name__ == "__main__":

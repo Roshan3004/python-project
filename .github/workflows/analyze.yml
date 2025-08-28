@@ -22,13 +22,11 @@ on:
         required: false
         default: "5"
         type: number
-  # 10-min schedule during awake hours only (IST 09:00–01:30)
-  # IST 09:00 = 03:30 UTC start; run every 10 min until 20:00 UTC (01:30 IST)
+  # 5-min schedule during peak hours, 10-min during off-peak (IST 09:00–01:30)
+  # IST 09:00 = 03:30 UTC start; run every 5 min during peak, 10 min during off-peak
   schedule:
-    - cron: "30-59/10 3 * * *" # 09:00–09:50 IST (03:30, 03:40, 03:50 UTC)
-    - cron: "35-59/10 3 * * *" # Backup offset at 09:05–09:55 IST (03:35, 03:45, 03:55 UTC)
-    - cron: "*/10 4-19 * * *"  # 10:00–01:00 IST every 10 min
-    - cron: "5-59/10 4-19 * * *" # Backup offset at :05 each 10-min slot
+    - cron: "*/5 4-18 * * *"   # 10:00–00:00 IST every 5 min (peak hours)
+    - cron: "*/10 3,19 * * *"  # 09:00–10:00 and 00:00–01:00 IST every 10 min (off-peak)
     - cron: "0 20 * * *"       # 01:30 IST final run
 
 concurrency:
@@ -63,7 +61,7 @@ jobs:
           COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || 0.68 }}
           LIMIT: ${{ github.event.inputs.limit || 2000 }}
         run: |
-          echo "⏱  Sleeping 12s to allow scraper to write fresh row..." && sleep 12
+          echo "⏱  Sleeping 5s to allow scraper to write fresh row..." && sleep 5
           echo "🚀 Starting WinGo Momentum Analysis (Preset: $PRESET)"
           python analyze.py \
             --source db \
@@ -73,4 +71,5 @@ jobs:
             --color_prob_threshold $COLOR_PROB \
             --limit $LIMIT \
             --enable_alert \
-            --log_to_db
+            --log_to_db \
+            --fast_mode
