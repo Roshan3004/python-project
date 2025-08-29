@@ -4,11 +4,11 @@ Tune these parameters to get your desired 7-15 signals per day
 """
 
 # ====== SIGNAL GENERATION THRESHOLDS ======
-# Higher thresholds for better signal quality (fewer but stronger signals)
-MOMENTUM_CONFIDENCE_THRESHOLD = 0.65      # Default: 0.65 (increased for quality)
-NUMBER_PATTERN_THRESHOLD = 0.68           # Default: 0.68 (increased for quality)
-TIME_PATTERN_THRESHOLD = 0.65             # Default: 0.65 (increased for quality)
-ENSEMBLE_THRESHOLD = 0.70                 # Default: 0.70 (ensemble needs higher confidence)
+# Manual thresholds (tuned for 5–10 strong signals/day)
+MOMENTUM_CONFIDENCE_THRESHOLD = 0.63
+NUMBER_PATTERN_THRESHOLD = 0.65
+TIME_PATTERN_THRESHOLD = 0.65
+ENSEMBLE_THRESHOLD = 0.68
 
 # ====== LOOKBACK PERIODS ======
 # Adjust these to change how much historical data is analyzed
@@ -34,7 +34,7 @@ MIN_HOURLY_DATA = 10                      # Default: 10 rounds minimum per hour
 
 # ====== ENSEMBLE ANALYSIS ======
 # Adjust these for combining multiple methods
-MIN_SOURCES_FOR_ENSEMBLE = 2              # Default: 2 methods must agree
+MIN_SOURCES_FOR_ENSEMBLE = 2              # Ensure ensemble can trigger with 2 agreeing sources
 ENSEMBLE_BONUS_THRESHOLD = 0.05           # Default: 0.05 higher than individual methods
 
 # ====== AGGRESSIVE SIGNAL GENERATION ======

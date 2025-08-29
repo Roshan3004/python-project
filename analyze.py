@@ -956,7 +956,7 @@ def main():
         
         # Sort signals by confidence to prioritize strongest
         signals = sorted(signals, key=lambda x: x["confidence"], reverse=True)
-        
+
         # Prefer SIZE signal if its confidence >= color confidence + margin
         prefer_size_margin = 0.03
         best_signal = None
@@ -969,8 +969,10 @@ def main():
             else:
                 best_signal = top
             
-            # Only alert if confidence is truly high
-            if best_signal["confidence"] >= alert_threshold:
+            # Only alert if: Ensemble OR exceptionally strong single-method (>=0.72)
+            is_ensemble = (best_signal.get("method") == "Ensemble")
+            exceptionally_strong = (best_signal["confidence"] >= 0.72)
+            if is_ensemble or exceptionally_strong:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 betting_period = get_next_betting_period(df)
                 
