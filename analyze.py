@@ -233,30 +233,13 @@ def log_alert_to_neon(conn_str: str,
 
 def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
     """Update prediction_alerts with actual outcome from game_history for unresolved rows.
-    Works in the same database; adds outcome columns if missing. Safe no-op on errors.
+    Uses the NEXT period after the anchor to determine outcomes.
     """
     try:
         import psycopg2
         with psycopg2.connect(conn_str) as conn:
             with conn.cursor() as cur:
-                # Ensure table exists and outcome columns are present
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS prediction_alerts (
-                        id SERIAL PRIMARY KEY,
-                        anchor_period_id VARCHAR(50) UNIQUE NOT NULL,
-                        predicted_color TEXT NOT NULL,
-                        predicted_number INT,
-                        color_probs JSONB,
-                        sources JSONB,
-                        confidence REAL,
-                        last300_precision REAL,
-                        cycle_len INT,
-                        cycle_acc REAL,
-                        created_at timestamptz DEFAULT now()
-                    );
-                    """
-                )
+                # Ensure outcome columns exist
                 cur.execute(
                     """
                     ALTER TABLE prediction_alerts
@@ -267,42 +250,64 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                     ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
                     """
                 )
-                # Resolve a batch using the next period in game_history
+                
+                # Get unresolved alerts
                 cur.execute(
                     """
-                    WITH unresolved AS (
-                        SELECT id, anchor_period_id
-                        FROM prediction_alerts
-                        WHERE resolved_at IS NULL
-                        ORDER BY created_at ASC
-                        LIMIT %s
-                    ), next_round AS (
-                        SELECT u.id,
-                               g.number AS outcome_number,
-                               g.color  AS outcome_color
-                        FROM unresolved u
-                        JOIN LATERAL (
-                            SELECT number, color
-                            FROM game_history
-                            WHERE period_id > u.anchor_period_id
-                            ORDER BY period_id
-                            LIMIT 1
-                        ) g ON TRUE
-                    )
-                    UPDATE prediction_alerts p
-                    SET outcome_number = nr.outcome_number,
-                        outcome_color  = nr.outcome_color,
-                        hit_number     = CASE WHEN p.predicted_number IS NOT NULL THEN (p.predicted_number = nr.outcome_number) ELSE NULL END,
-                        hit_color      = (p.predicted_color = nr.outcome_color),
-                        resolved_at    = now()
-                    FROM next_round nr
-                    WHERE p.id = nr.id;
+                    SELECT id, anchor_period_id, predicted_color, predicted_number
+                    FROM prediction_alerts
+                    WHERE resolved_at IS NULL
+                    ORDER BY created_at ASC
+                    LIMIT %s
                     """,
                     (batch_limit,)
                 )
+                
+                unresolved = cur.fetchall()
+                
+                for alert_id, anchor_period, predicted_color, predicted_number in unresolved:
+                    # Find the NEXT period after anchor_period
+                    try:
+                        next_period_id = str(int(anchor_period) + 1)
+                    except:
+                        continue
+                    
+                    # Get the actual outcome for that period
+                    cur.execute(
+                        """
+                        SELECT number, color
+                        FROM game_history
+                        WHERE period_id = %s
+                        LIMIT 1
+                        """,
+                        (next_period_id,)
+                    )
+                    
+                    outcome = cur.fetchone()
+                    if outcome:
+                        outcome_number, outcome_color = outcome
+                        
+                        # Determine if prediction was correct
+                        hit_color = (predicted_color == outcome_color)
+                        hit_number = (predicted_number == outcome_number) if predicted_number is not None else None
+                        
+                        # Update the alert with outcome
+                        cur.execute(
+                            """
+                            UPDATE prediction_alerts
+                            SET outcome_number = %s,
+                                outcome_color = %s,
+                                hit_color = %s,
+                                hit_number = %s,
+                                resolved_at = now()
+                            WHERE id = %s
+                            """,
+                            (outcome_number, outcome_color, hit_color, hit_number, alert_id)
+                        )
+                
             conn.commit()
-    except Exception:
-        # Avoid breaking analysis if resolution fails
+    except Exception as e:
+        print(f"Warning: Could not resolve alerts: {e}")
         pass
 
 def color_from_number(n: int) -> str:
@@ -661,59 +666,164 @@ def analyze_time_based_patterns(df: pd.DataFrame, min_data: int = 200) -> Dict[s
     
     return probs
 
+def detect_volatility(df: pd.DataFrame, lookback: int = 30) -> float:
+    """Detect market volatility to avoid unstable periods"""
+    if len(df) < lookback:
+        return 0.0
+    
+    recent = df.tail(lookback)
+    colors = recent["color"].tolist()
+    
+    # Count color switches in recent period
+    switches = 0
+    for i in range(1, len(colors)):
+        if colors[i] != colors[i-1]:
+            switches += 1
+    
+    # High switch rate indicates volatility
+    volatility = switches / max(1, len(colors) - 1)
+    return volatility
+
+def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[str, float]:
+    """Analyze recent performance to adjust confidence dynamically"""
+    try:
+        import psycopg2
+        from datetime import datetime, timedelta
+        
+        cutoff = datetime.utcnow() - timedelta(hours=lookback_hours)
+        
+        with psycopg2.connect(conn_str) as conn:
+            with conn.cursor() as cur:
+                # Get recent resolved predictions
+                cur.execute("""
+                    SELECT hit_color, confidence, method 
+                    FROM prediction_alerts 
+                    WHERE created_at >= %s 
+                    AND resolved_at IS NOT NULL 
+                    ORDER BY created_at DESC
+                    LIMIT 10
+                """, (cutoff,))
+                
+                results = cur.fetchall()
+                if not results:
+                    return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
+                
+                # Calculate recent accuracy
+                hits = sum(1 for hit, _, _ in results if hit)
+                accuracy = hits / len(results)
+                
+                # Calculate confidence penalty based on recent performance
+                if accuracy < 0.4:  # Very poor recent performance
+                    confidence_penalty = 0.10
+                elif accuracy < 0.6:  # Poor recent performance
+                    confidence_penalty = 0.05
+                else:
+                    confidence_penalty = 0.0
+                
+                # Calculate method-specific penalties
+                method_performance = {}
+                for hit, conf, method in results:
+                    if method not in method_performance:
+                        method_performance[method] = {"hits": 0, "total": 0}
+                    method_performance[method]["total"] += 1
+                    if hit:
+                        method_performance[method]["hits"] += 1
+                
+                method_penalty = {}
+                for method, stats in method_performance.items():
+                    method_acc = stats["hits"] / stats["total"] if stats["total"] > 0 else 0.5
+                    if method_acc < 0.3:  # Method performing very poorly
+                        method_penalty[method] = 0.15
+                    elif method_acc < 0.5:  # Method performing poorly
+                        method_penalty[method] = 0.08
+                    else:
+                        method_penalty[method] = 0.0
+                
+                return {
+                    "accuracy": accuracy,
+                    "confidence_penalty": confidence_penalty,
+                    "method_penalty": method_penalty
+                }
+    except Exception:
+        return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
+
 def detect_strong_signals(df: pd.DataFrame, 
                          momentum_threshold: float = 0.6,
                          pattern_threshold: float = 0.65,
                          time_threshold: float = 0.6,
-                         ensemble_threshold: float = 0.7) -> List[Dict]:
-    """Detect strong signals using multiple analysis methods"""
+                         ensemble_threshold: float = 0.7,
+                         conn_str: str = None) -> List[Dict]:
+    """Detect strong signals using multiple analysis methods with enhanced filtering"""
     signals = []
     
-    # 1. Color Momentum Analysis
+    # Enhanced filtering: Check volatility
+    volatility = detect_volatility(df)
+    if volatility > 0.75:  # High volatility threshold
+        return []  # Skip during volatile periods
+    
+    # Enhanced filtering: Analyze recent performance for dynamic adjustment
+    performance_data = {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
+    if conn_str:
+        performance_data = analyze_recent_performance(conn_str)
+    
+    # Apply performance-based confidence adjustments
+    confidence_penalty = performance_data.get("confidence_penalty", 0.0)
+    method_penalties = performance_data.get("method_penalty", {})
+    
+    # 1. Color Momentum Analysis (dynamic threshold)
     momentum_probs = analyze_color_momentum(df)
     max_momentum = max(momentum_probs.values())
-    if max_momentum >= momentum_threshold:
+    momentum_penalty = method_penalties.get("ColorMomentum", 0.0)
+    adjusted_momentum = max_momentum - momentum_penalty
+    
+    if adjusted_momentum >= momentum_threshold + 0.03 + confidence_penalty:
         best_color = max(momentum_probs, key=momentum_probs.get)
         signals.append({
             "type": "color",
             "color": best_color,
-            "confidence": max_momentum,
+            "confidence": adjusted_momentum,
             "method": "ColorMomentum",
-            "reason": f"Color momentum suggests {best_color} with {max_momentum:.3f} confidence",
+            "reason": f"Color momentum suggests {best_color} with {adjusted_momentum:.3f} confidence (adjusted for recent performance)",
             "probs": momentum_probs
         })
     
-    # 2. Number Pattern Analysis
+    # 2. Number Pattern Analysis (dynamic threshold)
     pattern_probs = analyze_number_patterns(df)
     max_pattern = max(pattern_probs.values())
-    if max_pattern >= pattern_threshold:
+    pattern_penalty = method_penalties.get("NumberPattern", 0.0)
+    adjusted_pattern = max_pattern - pattern_penalty
+    
+    if adjusted_pattern >= pattern_threshold + 0.03 + confidence_penalty:
         best_color = max(pattern_probs, key=pattern_probs.get)
         signals.append({
             "type": "color",
             "color": best_color,
-            "confidence": max_pattern,
+            "confidence": adjusted_pattern,
             "method": "NumberPattern",
-            "reason": f"Number pattern suggests {best_color} correction with {max_pattern:.3f} confidence",
+            "reason": f"Number pattern suggests {best_color} correction with {adjusted_pattern:.3f} confidence (adjusted for recent performance)",
             "probs": pattern_probs
         })
     
-    # 3. Time-based Pattern Analysis
+    # 3. Time-based Pattern Analysis (dynamic threshold)
     time_probs = analyze_time_based_patterns(df)
     max_time = max(time_probs.values())
-    if max_time >= time_threshold:
+    time_penalty = method_penalties.get("TimePattern", 0.0)
+    adjusted_time = max_time - time_penalty
+    
+    if adjusted_time >= time_threshold + 0.05 + confidence_penalty:
         best_color = max(time_probs, key=time_probs.get)
         signals.append({
             "type": "color",
             "color": best_color,
-            "confidence": max_time,
+            "confidence": adjusted_time,
             "method": "TimePattern",
-            "reason": f"Time pattern suggests {best_color} bias with {max_time:.3f} confidence",
+            "reason": f"Time pattern suggests {best_color} bias with {adjusted_time:.3f} confidence (adjusted for recent performance)",
             "probs": time_probs
         })
     
-    # 4. Big/Small Analysis
+    # 4. Big/Small Analysis (stricter threshold)
     size_probs, size_conf, size_reason = analyze_big_small(df)
-    if size_conf >= 0.70:  # Higher threshold for size predictions
+    if size_conf >= 0.73:  # Raised threshold
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
         signals.append({
             "type": "size",
@@ -724,23 +834,22 @@ def detect_strong_signals(df: pd.DataFrame,
             "probs": size_probs
         })
     
-    # 5. Ensemble Analysis - if multiple methods agree
+    # 5. Enhanced Ensemble Analysis - require 3+ agreeing methods
     color_signals = [s for s in signals if s["type"] == "color"]
-    if len(color_signals) >= 2:
-        # Check if multiple methods predict the same color
+    if len(color_signals) >= 3:  # Require 3+ methods
         color_predictions = [s["color"] for s in color_signals]
         if len(set(color_predictions)) == 1:  # All predict same color
             best_color = color_predictions[0]
             avg_confidence = sum(s["confidence"] for s in color_signals) / len(color_signals)
             
-            if avg_confidence >= ensemble_threshold:
+            if avg_confidence >= ensemble_threshold + 0.05:  # Stricter ensemble
                 signals.append({
                     "type": "color",
                     "color": best_color,
-                    "confidence": avg_confidence,
+                    "confidence": min(0.95, avg_confidence + 0.05),  # Bonus for agreement
                     "method": "Ensemble",
                     "reason": f"Multiple methods agree on {best_color} with {avg_confidence:.3f} avg confidence",
-                    "probs": momentum_probs  # Use momentum probs as base
+                    "probs": momentum_probs
                 })
     
     return signals
@@ -882,11 +991,15 @@ def main():
         
         print(f"📊 Loaded {len(df)} rounds of data")
         
+        # Resolve any pending alert outcomes
+        print("🔄 Resolving pending alert outcomes...")
+        resolve_unresolved_alerts(cfg.neon_conn_str)
+        
         if len(df) < 100:
             print("❌ Insufficient data for analysis (need at least 100 rounds)")
             return
         
-        # Detect signals
+        # Detect signals with enhanced filtering
         if args.preset != "balanced":
             preset_config = get_preset_config(args.preset)
             if not preset_config:
@@ -896,14 +1009,16 @@ def main():
                                             momentum_threshold=preset_config["momentum"],
                                             pattern_threshold=preset_config["number_pattern"],
                                             time_threshold=preset_config["time_pattern"],
-                                            ensemble_threshold=preset_config["ensemble"])
+                                            ensemble_threshold=preset_config["ensemble"],
+                                            conn_str=cfg.neon_conn_str)
         else:
             # Use default threshold
             signals = detect_strong_signals(df, 
                                             momentum_threshold=args.color_prob_threshold,
                                             pattern_threshold=0.65, # Default for number pattern
                                             time_threshold=0.6,   # Default for time pattern
-                                            ensemble_threshold=0.7) # Default for ensemble
+                                            ensemble_threshold=0.7, # Default for ensemble
+                                            conn_str=cfg.neon_conn_str)
     except Exception as e:
         print(f"❌ Error detecting signals: {e}")
         return
