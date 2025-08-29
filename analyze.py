@@ -503,10 +503,10 @@ def format_betting_alert(signal: dict, betting_period: str, accuracy: float) -> 
     
     return msg
 
-def ensure_min_time_buffer(df: pd.DataFrame, betting_period: str, min_buffer_seconds: int = 60) -> str:
+def ensure_min_time_buffer(df: pd.DataFrame, betting_period: str, min_buffer_seconds: int = 30) -> str:
     """If the computed betting_period starts in less than `min_buffer_seconds`,
     shift it forward to guarantee user has time to bet.
-    Default 60 seconds buffer for safe betting window.
+    Default 30 seconds buffer - enough time to place bet.
     """
     now_utc = datetime.utcnow()
     try:
@@ -514,24 +514,26 @@ def ensure_min_time_buffer(df: pd.DataFrame, betting_period: str, min_buffer_sec
             target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
             seconds_until = (target_dt - now_utc).total_seconds()
             
-            # If less than buffer time, push to next safe period
-            while seconds_until < min_buffer_seconds:
+            # If less than buffer time, push to next period only
+            if seconds_until < min_buffer_seconds:
                 suffix = betting_period[12:]
                 target_dt = target_dt + timedelta(minutes=1)
                 betting_period = f"{target_dt.strftime('%Y%m%d%H%M')}{suffix}"
-                seconds_until = (target_dt - now_utc).total_seconds()
             
             return betting_period
             
-        # Numeric-only fallback - always add buffer periods
+        # Numeric-only fallback - add 1 period if needed
         val = int(betting_period)
-        # Add 1-2 periods to ensure safe betting window
-        return str(val + 2)  # Skip next period, bet on period after
+        # Check if we need buffer based on current time
+        current_minute = datetime.utcnow().second
+        if current_minute > 30:  # If past 30 seconds in current minute
+            return str(val + 1)  # Skip to next period
+        return str(val)  # Use current next period
         
     except Exception:
-        # Conservative fallback - add 2 periods
+        # Conservative fallback - use next period
         try:
-            return str(int(betting_period) + 2)
+            return str(int(betting_period) + 1)
         except:
             return betting_period
 
@@ -1092,15 +1094,21 @@ def main():
             exceptionally_strong = (best_signal["confidence"] >= 0.72)
             if is_ensemble or exceptionally_strong:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
-                betting_period = get_next_betting_period(df)
+                initial_period = get_next_betting_period(df)
                 
-                # Use safer buffer for reliable betting window
+                # Use 30 second buffer as requested
                 if args.fast_mode:
-                    min_buffer = 45  # 45 seconds minimum
+                    min_buffer = 20  # 20 seconds minimum for fast mode
                 else:
-                    min_buffer = 60  # 60 seconds minimum (1 full minute)
+                    min_buffer = 30  # 30 seconds minimum (user preference)
                 
-                betting_period = ensure_min_time_buffer(df, betting_period, min_buffer_seconds=min_buffer)
+                betting_period = ensure_min_time_buffer(df, initial_period, min_buffer_seconds=min_buffer)
+                
+                # If betting period was shifted due to time buffer, skip this signal
+                # to avoid prediction-betting period mismatch
+                if betting_period != initial_period:
+                    print(f"⏰ Skipping signal - insufficient time buffer (need {min_buffer}s)")
+                    return
                 
                 # Create unique alert key to prevent duplicates
                 if best_signal["type"] == "color":
