@@ -50,26 +50,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Smart mid-period timing optimization with timeout protection
+      - name: Fresh data guarantee timing (1m10s post-period)
         run: |
-          echo "🕐 Calculating optimal start time for mid-period analysis..."
+          echo "🕐 Calculating timing to guarantee fresh period data..."
           current_second=$(date +%S)
-          target_second=40
-          if [ $current_second -lt $target_second ]; then
-            sleep_time=$((target_second - current_second))
+          target_seconds=70  # 1m10s to ensure period completion + scraping
+          
+          if [ $current_second -le $target_seconds ]; then
+            sleep_time=$((target_seconds - current_second))
           else
-            sleep_time=$((60 + target_second - current_second))
+            sleep_time=$((60 + target_seconds - current_second))
           fi
           
-          # Timeout protection: max 55s sleep to prevent hitting GitHub's limits
-          if [ $sleep_time -gt 55 ]; then
-            echo "⚠️  Sleep time ${sleep_time}s exceeds safety limit, using 55s max"
-            sleep_time=55
-          fi
-          
-          echo "⏱  Sleeping ${sleep_time}s to reach optimal timing..."
-          timeout 60 sleep $sleep_time || echo "⏰ Sleep timeout reached"
-          echo "✅ Reached optimal mid-period timing ($(date +%S)s)"
+          echo "⏱  Sleeping ${sleep_time}s to guarantee fresh data (target: ${target_seconds}s)..."
+          sleep $sleep_time
+          echo "✅ Fresh data timing reached - period guaranteed complete ($(date +%S)s)"
 
       - name: Run momentum analysis (optimized timing)
         env:
