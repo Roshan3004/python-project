@@ -50,7 +50,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run momentum analysis (delayed start for fresh data)
+      - name: Smart mid-period timing optimization with timeout protection
+        run: |
+          echo "🕐 Calculating optimal start time for mid-period analysis..."
+          current_second=$(date +%S)
+          target_second=40
+          if [ $current_second -lt $target_second ]; then
+            sleep_time=$((target_second - current_second))
+          else
+            sleep_time=$((60 + target_second - current_second))
+          fi
+          
+          # Timeout protection: max 55s sleep to prevent hitting GitHub's limits
+          if [ $sleep_time -gt 55 ]; then
+            echo "⚠️  Sleep time ${sleep_time}s exceeds safety limit, using 55s max"
+            sleep_time=55
+          fi
+          
+          echo "⏱  Sleeping ${sleep_time}s to reach optimal timing..."
+          timeout 60 sleep $sleep_time || echo "⏰ Sleep timeout reached"
+          echo "✅ Reached optimal mid-period timing ($(date +%S)s)"
+
+      - name: Run momentum analysis (optimized timing)
         env:
           NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -61,8 +82,7 @@ jobs:
           COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || 0.68 }}
           LIMIT: ${{ github.event.inputs.limit || 2000 }}
         run: |
-          echo "⏱  Sleeping 5s to allow scraper to write fresh row..." && sleep 5
-          echo "🚀 Starting WinGo Momentum Analysis (Preset: $PRESET)"
+          echo "🚀 Starting WinGo Momentum Analysis (Mid-period optimized)"
           python analyze.py \
             --source db \
             --preset $PRESET \
@@ -72,4 +92,5 @@ jobs:
             --limit $LIMIT \
             --enable_alert \
             --log_to_db \
-            --fast_mode
+            --fast_mode \
+            --mid_period_mode

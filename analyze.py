@@ -163,7 +163,9 @@ def ensure_fresh_neon_data(cfg: ScraperConfig, limit: int, fresh_seconds: int = 
     max_wait_seconds: total time to wait/retry before giving up
     """
     waited = 0
+    retry_count = 0
     while True:
+        retry_count += 1
         df = load_neon(cfg.neon_conn_str, limit=limit)
         try:
             last_ts = pd.to_datetime(df["scraped_at"].iloc[-1], utc=True, errors="coerce")
@@ -172,12 +174,27 @@ def ensure_fresh_neon_data(cfg: ScraperConfig, limit: int, fresh_seconds: int = 
         now_utc = pd.Timestamp.utcnow()
         if pd.notna(last_ts):
             age = (now_utc - last_ts).total_seconds()
+            print(f"📊 Data freshness check: {age:.1f}s old (target: ≤{fresh_seconds}s)")
             if age <= fresh_seconds:
+                print(f"✅ Fresh data found after {retry_count} attempt(s)")
                 return df
+        else:
+            print(f"⚠️  Unable to parse scraped_at timestamp, attempt {retry_count}")
+        
         if waited >= max_wait_seconds:
+            print(f"⏰ Timeout reached ({max_wait_seconds}s), proceeding with available data")
             return df
-        time.sleep(3)  # Reduced from 5s to 3s
-        waited += 3
+        
+        # Smart retry timing: faster retries near period boundaries
+        current_second = int(time.time()) % 60
+        if 55 <= current_second or current_second <= 5:  # Near period boundary
+            sleep_time = 1  # Check every second near period end
+        else:
+            sleep_time = 3  # Normal 3-second intervals
+        
+        print(f"🔄 Retrying in {sleep_time}s... (waited {waited}s/{max_wait_seconds}s)")
+        time.sleep(sleep_time)
+        waited += sleep_time
 
 def log_alert_to_neon(conn_str: str,
                       anchor_period_id: str,
@@ -953,6 +970,7 @@ def main():
     parser.add_argument("--enable_alert", action="store_true", help="Enable Telegram alerts")
     parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
     parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
+    parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
     args = parser.parse_args()
     
     print("🚀 WinGo Momentum Analysis System")
@@ -971,8 +989,12 @@ def main():
         else:
             cfg = ScraperConfig()
             
-            # Use faster settings in fast mode
-            if args.fast_mode:
+            # Adjust timing based on mode
+            if args.mid_period_mode:
+                fresh_seconds = 25  # Wait longer for fresh data in mid-period mode
+                max_wait = 15       # Allow more time for period completion
+                print("🎯 Mid-period mode enabled - optimized for fresh period data")
+            elif args.fast_mode:
                 fresh_seconds = 15  # Reduced from 20
                 max_wait = 8        # Reduced from 10
                 print("⚡ Fast mode enabled - reduced delays for quicker alerts")
@@ -1084,19 +1106,23 @@ def main():
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 initial_period = get_next_betting_period(df)
                 
-                # Use 30 second buffer as requested
-                if args.fast_mode:
-                    min_buffer = 20  # 20 seconds minimum for fast mode
+                # Buffer requirements based on timing mode
+                if args.mid_period_mode:
+                    min_buffer = 15  # Optimized for mid-period timing
+                    print("🎯 Using 15s buffer for mid-period optimization")
+                elif args.fast_mode:
+                    min_buffer = 15  # Reduced for fast mode
+                    print("⚡ Using 15s buffer for fast mode")
                 else:
-                    min_buffer = 30  # 30 seconds minimum (user preference)
+                    min_buffer = 20  # Standard buffer
+                    print(f"🛡️  Using {min_buffer}s safety buffer")
                 
                 betting_period = ensure_min_time_buffer(df, initial_period, min_buffer_seconds=min_buffer)
                 
-                # If betting period was shifted due to time buffer, skip this signal
-                # to avoid prediction-betting period mismatch
+                # If betting period was shifted due to time buffer, continue with same prediction
+                # The logic is: analyze anchor period → predict for betting period (with buffer)
                 if betting_period != initial_period:
-                    print(f"⏰ Skipping signal - insufficient time buffer (need {min_buffer}s)")
-                    return
+                    print(f"⏰ Time buffer applied - betting on period {betting_period} (shifted from {initial_period})")
                 
                 # Create unique alert key to prevent duplicates
                 if best_signal["type"] == "color":
