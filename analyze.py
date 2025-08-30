@@ -1006,6 +1006,16 @@ def main():
         
         print(f"📊 Loaded {len(df)} rounds of data")
         
+        # Show analysis verification details
+        if len(df) > 0:
+            latest_period = df["period_id"].iloc[-1]
+            target_period = get_next_betting_period(df)
+            print("=" * 50)
+            print("🔍 ANALYSIS VERIFICATION")
+            print(f"📥 Latest analyzed period (anchor): {latest_period}")
+            print(f"🎯 Target betting period: {target_period}")
+            print("=" * 50)
+        
         # Resolve any pending alert outcomes
         print("🔄 Resolving pending alert outcomes...")
         resolve_unresolved_alerts(cfg.neon_conn_str)
