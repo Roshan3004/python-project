@@ -649,11 +649,23 @@ def analyze_number_patterns(df: pd.DataFrame, lookback: int = 100) -> Dict[str, 
         elif num == 0:
             color_probs["VIOLET"] += 1
     
-    # Normalize
+    # Normalize with confidence dampening to prevent overly confident signals
     total = sum(color_probs.values())
     if total > 0:
         for color in color_probs:
             color_probs[color] /= total
+        
+        # Dampen confidence based on strength of under-representation
+        max_prob = max(color_probs.values())
+        under_repr_strength = len(under_represented) / 10.0  # 0.1 to 1.0 scale
+        confidence_factor = min(0.80, 0.55 + under_repr_strength * 0.25)  # Max 0.80
+        
+        # Apply dampening to prevent perfect 1.0 confidence
+        for color in color_probs:
+            if color_probs[color] == max_prob:
+                color_probs[color] = confidence_factor
+            else:
+                color_probs[color] *= (1 - confidence_factor) / 2
     else:
         color_probs = {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
     
