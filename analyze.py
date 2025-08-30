@@ -766,69 +766,57 @@ def detect_strong_signals(df: pd.DataFrame,
     if volatility > 0.75:  # High volatility threshold
         return []  # Skip during volatile periods
     
-    # Enhanced filtering: Analyze recent performance for dynamic adjustment
-    performance_data = {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
-    if conn_str:
-        performance_data = analyze_recent_performance(conn_str)
+    # Note: Performance analysis removed - using fixed high thresholds for quality
     
-    # Apply performance-based confidence adjustments
-    confidence_penalty = performance_data.get("confidence_penalty", 0.0)
-    method_penalties = performance_data.get("method_penalty", {})
-    
-    # 1. Color Momentum Analysis (dynamic threshold)
+    # 1. Color Momentum Analysis
     momentum_probs = analyze_color_momentum(df)
     max_momentum = max(momentum_probs.values())
-    momentum_penalty = method_penalties.get("ColorMomentum", 0.0)
-    adjusted_momentum = max_momentum - momentum_penalty
     
-    if adjusted_momentum >= momentum_threshold + 0.03 + confidence_penalty:
+    if max_momentum >= momentum_threshold:
         best_color = max(momentum_probs, key=momentum_probs.get)
         signals.append({
             "type": "color",
             "color": best_color,
-            "confidence": adjusted_momentum,
+            "confidence": max_momentum,
             "method": "ColorMomentum",
-            "reason": f"Color momentum suggests {best_color} with {adjusted_momentum:.3f} confidence (adjusted for recent performance)",
+            "reason": f"Color momentum suggests {best_color} with {max_momentum:.3f} confidence",
             "probs": momentum_probs
         })
     
-    # 2. Number Pattern Analysis (dynamic threshold)
+    # 2. Number Pattern Analysis
     pattern_probs = analyze_number_patterns(df)
     max_pattern = max(pattern_probs.values())
-    pattern_penalty = method_penalties.get("NumberPattern", 0.0)
-    adjusted_pattern = max_pattern - pattern_penalty
     
-    if adjusted_pattern >= pattern_threshold + 0.03 + confidence_penalty:
+    if max_pattern >= pattern_threshold:
         best_color = max(pattern_probs, key=pattern_probs.get)
         signals.append({
             "type": "color",
             "color": best_color,
-            "confidence": adjusted_pattern,
+            "confidence": max_pattern,
             "method": "NumberPattern",
-            "reason": f"Number pattern suggests {best_color} correction with {adjusted_pattern:.3f} confidence (adjusted for recent performance)",
+            "reason": f"Number pattern suggests {best_color} correction with {max_pattern:.3f} confidence",
             "probs": pattern_probs
         })
     
-    # 3. Time-based Pattern Analysis (dynamic threshold)
+    # 3. Time-based Pattern Analysis
     time_probs = analyze_time_based_patterns(df)
     max_time = max(time_probs.values())
-    time_penalty = method_penalties.get("TimePattern", 0.0)
-    adjusted_time = max_time - time_penalty
     
-    if adjusted_time >= time_threshold + 0.05 + confidence_penalty:
+    if max_time >= time_threshold:
         best_color = max(time_probs, key=time_probs.get)
         signals.append({
             "type": "color",
             "color": best_color,
-            "confidence": adjusted_time,
+            "confidence": max_time,
             "method": "TimePattern",
-            "reason": f"Time pattern suggests {best_color} bias with {adjusted_time:.3f} confidence (adjusted for recent performance)",
+            "reason": f"Time pattern suggests {best_color} bias with {max_time:.3f} confidence",
             "probs": time_probs
         })
     
-    # 4. Big/Small Analysis (stricter threshold)
+    # 4. Big/Small Analysis
     size_probs, size_conf, size_reason = analyze_big_small(df)
-    if size_conf >= 0.73:  # Raised threshold
+    
+    if size_conf >= 0.75:  # High threshold for quality size signals
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
         signals.append({
             "type": "size",
@@ -847,7 +835,7 @@ def detect_strong_signals(df: pd.DataFrame,
             best_color = color_predictions[0]
             avg_confidence = sum(s["confidence"] for s in color_signals) / len(color_signals)
             
-            if avg_confidence >= ensemble_threshold + 0.05:  # Stricter ensemble
+            if avg_confidence >= ensemble_threshold:
                 signals.append({
                     "type": "color",
                     "color": best_color,

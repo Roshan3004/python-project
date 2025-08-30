@@ -4,11 +4,11 @@ Tune these parameters to get your desired 7-15 signals per day
 """
 
 # ====== SIGNAL GENERATION THRESHOLDS ======
-# Manual thresholds (tuned for 5–10 strong signals/day)
-MOMENTUM_CONFIDENCE_THRESHOLD = 0.63
-NUMBER_PATTERN_THRESHOLD = 0.65
-TIME_PATTERN_THRESHOLD = 0.65
-ENSEMBLE_THRESHOLD = 0.68
+# Manual thresholds (tuned for high accuracy - fewer but stronger signals)
+MOMENTUM_CONFIDENCE_THRESHOLD = 0.72
+NUMBER_PATTERN_THRESHOLD = 0.75
+TIME_PATTERN_THRESHOLD = 0.78
+ENSEMBLE_THRESHOLD = 0.80
 
 # ====== LOOKBACK PERIODS ======
 # Adjust these to change how much historical data is analyzed
@@ -106,17 +106,17 @@ def get_preset_config(preset_name: str):
     """Get predefined configurations for different signal frequencies"""
     presets = {
         "conservative": {
-            "momentum": 0.65,
-            "number_pattern": 0.68,
-            "time_pattern": 0.70,
-            "ensemble": 0.72,
+            "momentum": 0.72,
+            "number_pattern": 0.75,
+            "time_pattern": 0.78,
+            "ensemble": 0.80,
             "aggressive": False
         },
         "balanced": {
-            "momentum": 0.60,
-            "number_pattern": 0.62,
-            "time_pattern": 0.64,
-            "ensemble": 0.66,
+            "momentum": 0.68,
+            "number_pattern": 0.70,
+            "time_pattern": 0.72,
+            "ensemble": 0.74,
             "aggressive": True
         },
         "aggressive": {
