@@ -658,7 +658,7 @@ def analyze_number_patterns(df: pd.DataFrame, lookback: int = 100) -> Dict[str, 
         # Dampen confidence based on strength of under-representation
         max_prob = max(color_probs.values())
         under_repr_strength = len(under_represented) / 10.0  # 0.1 to 1.0 scale
-        confidence_factor = min(0.80, 0.55 + under_repr_strength * 0.25)  # Max 0.80
+        confidence_factor = min(0.75, 0.50 + under_repr_strength * 0.25)  # Max 0.75
         
         # Apply dampening to prevent perfect 1.0 confidence
         for color in color_probs:
