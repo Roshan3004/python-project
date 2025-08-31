@@ -106,10 +106,10 @@ def get_preset_config(preset_name: str):
     """Get predefined configurations for different signal frequencies"""
     presets = {
         "conservative": {
-            "momentum": 0.62,
-            "number_pattern": 0.65,
-            "time_pattern": 0.67,
-            "ensemble": 0.70,
+            "momentum": 0.55,
+            "number_pattern": 0.58,
+            "time_pattern": 0.60,
+            "ensemble": 0.62,
             "aggressive": False
         },
         "balanced": {
