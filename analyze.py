@@ -1132,9 +1132,9 @@ def main():
             else:
                 best_signal = top
             
-            # Only alert if: Ensemble OR exceptionally strong single-method (>=0.55)
+            # Only alert if: Ensemble OR exceptionally strong single-method (>=0.47)
             is_ensemble = (best_signal.get("method") == "Ensemble")
-            exceptionally_strong = (best_signal["confidence"] >= 0.55)
+            exceptionally_strong = (best_signal["confidence"] >= 0.47)
             if is_ensemble or exceptionally_strong:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 initial_period = get_next_betting_period(df)
