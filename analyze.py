@@ -851,7 +851,7 @@ def detect_strong_signals(df: pd.DataFrame,
     size_probs, size_conf, size_reason = analyze_big_small(df)
     print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: 0.72)")
     
-    if size_conf >= 0.72:  # Increased threshold to improve 50% size accuracy
+    if size_conf >= 0.85:  # Drastically increased - size predictions consistently failing
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
         signals.append({
             "type": "size",
