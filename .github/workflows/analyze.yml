@@ -22,12 +22,12 @@ on:
         required: false
         default: "5"
         type: number
-  # 5-min schedule during peak hours, 10-min during off-peak (IST 09:00–01:30)
-  # IST 09:00 = 03:30 UTC start; run every 5 min during peak, 10 min during off-peak
+  # Every 10 minutes during active hours (9AM-1:30AM IST = 03:30-20:00 UTC)
+  # Sleep time excluded: 1:30AM-9AM IST (20:00-03:30 UTC)
   schedule:
-    - cron: "*/5 4-18 * * *"   # 10:00–00:00 IST every 5 min (peak hours)
-    - cron: "*/10 3,19 * * *"  # 09:00–10:00 and 00:00–01:00 IST every 10 min (off-peak)
-    - cron: "0 20 * * *"       # 01:30 IST final run
+    - cron: "*/10 4-19 * * *"   # 9:30AM-1:00AM IST every 10 min
+    - cron: "0,10,20,30 3 * * *"  # 9:00AM-9:30AM IST every 10 min  
+    - cron: "0 20 * * *"        # 1:30AM IST final run
 
 concurrency:
   group: analyze-wingo
