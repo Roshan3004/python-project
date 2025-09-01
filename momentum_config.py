@@ -1,6 +1,6 @@
 """
-Configuration file for WinGo Momentum Analysis System
-Tune these parameters to get your desired 7-15 signals per day
+Configuration file for WinGo Machine Learning Analysis System
+Tune these parameters to get your desired 7-15 signals per day with high accuracy
 """
 
 # ====== SIGNAL GENERATION THRESHOLDS ======

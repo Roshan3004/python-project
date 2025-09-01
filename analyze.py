@@ -5,6 +5,10 @@ import pandas as pd
 import numpy as np
 from scipy.stats import chisquare
 import requests
+from lightgbm import LGBMClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 from db import MongoStore
 from strategy import suggest_next, suggest_from_ensemble
 from config import ScraperConfig
@@ -571,134 +575,200 @@ def summarize_flags(flags: Dict[str,bool]) -> Tuple[bool, str]:
     active = [k for k,v in flags.items() if v]
     return (len(active)>0, (", ".join(active) if active else "none"))
 
-# ====== NEW MOMENTUM-BASED ANALYSIS SYSTEM ======
+# ====== MACHINE LEARNING ANALYSIS SYSTEM ======
 
-def analyze_color_momentum(df: pd.DataFrame, lookback: int = 50) -> Dict[str, float]:
-    """Analyze color momentum based on recent frequency and streaks"""
-    if len(df) < lookback:
+def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 500) -> Dict[str, float]:
+    """
+    Use LightGBM to predict next round color based on historical patterns.
+    
+    Features:
+    - Time of day (hour, minute)
+    - Colors from 1, 2, 3 rounds ago
+    - RED/GREEN frequency over last 10, 30, 50 rounds
+    - Recent color streaks
+    - Number patterns
+    """
+    if len(df) < min_data_points:
+        print(f"⚠️  Insufficient data for ML model (need {min_data_points}, have {len(df)})")
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
     
-    recent = df.tail(lookback)
-    colors = recent["color"].tolist()
-    
-    # Count recent frequencies
-    color_counts = {"RED": 0, "GREEN": 0, "VIOLET": 0}
-    for color in colors:
-        color_counts[color] += 1
-    
-    # Calculate momentum scores
-    total = len(colors)
-    momentum = {}
-    for color in ["RED", "GREEN", "VIOLET"]:
-        freq = color_counts[color] / total
+    try:
+        # Prepare features and target
+        features_list = []
+        targets = []
         
-        # Streak bonus for current color
-        streak = 0
-        for c in reversed(colors):
-            if c == color:
-                streak += 1
+        # Use last 1000 rounds for training (or all available if less)
+        train_data = df.tail(min(1000, len(df))).copy()
+        
+        for i in range(50, len(train_data)):  # Start from 50 to have enough history
+            features = []
+            
+            # Time features
+            try:
+                timestamp = pd.to_datetime(train_data.iloc[i]["scraped_at"])
+                features.extend([
+                    timestamp.hour,
+                    timestamp.minute,
+                    timestamp.weekday()  # Day of week
+                ])
+            except:
+                features.extend([12, 0, 0])  # Default values
+            
+            # Historical color features (1, 2, 3 rounds ago)
+            for lag in [1, 2, 3]:
+                if i - lag >= 0:
+                    color = train_data.iloc[i - lag]["color"]
+                    # Encode colors as numbers
+                    color_encoded = {"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0)
+                    features.append(color_encoded)
+                else:
+                    features.append(0)  # Default for missing data
+            
+            # Frequency features (last 10, 30, 50 rounds)
+            for window in [10, 30, 50]:
+                if i >= window:
+                    window_data = train_data.iloc[i-window:i]
+                    red_freq = (window_data["color"] == "RED").sum() / window
+                    green_freq = (window_data["color"] == "GREEN").sum() / window
+                    violet_freq = (window_data["color"] == "VIOLET").sum() / window
+                    features.extend([red_freq, green_freq, violet_freq])
+                else:
+                    features.extend([0.33, 0.33, 0.34])  # Default frequencies
+            
+            # Recent streak features
+            current_color = train_data.iloc[i-1]["color"]
+            streak = 1
+            for j in range(i-2, max(0, i-10), -1):
+                if train_data.iloc[j]["color"] == current_color:
+                    streak += 1
+                else:
+                    break
+            features.append(min(streak, 10))  # Cap streak at 10
+            
+            # Number pattern features
+            if i >= 20:
+                recent_numbers = train_data.iloc[i-20:i]["number"].astype(int).tolist()
+                # Count of each number (0-9)
+                for num in range(10):
+                    features.append(recent_numbers.count(num) / 20)
             else:
-                break
+                features.extend([0.1] * 10)  # Default uniform distribution
+            
+            # Add features to list
+            features_list.append(features)
+            
+            # Target (next round color)
+            target_color = train_data.iloc[i]["color"]
+            target_encoded = {"RED": 0, "GREEN": 1, "VIOLET": 2}.get(target_color, 0)
+            targets.append(target_encoded)
         
-        # Bonus increases with streak length (capped at 0.15)
-        streak_bonus = min(0.15, 0.03 * streak)
+        if len(features_list) < 100:
+            print("⚠️  Not enough training samples for ML model")
+            return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
         
-        # Final momentum score
-        momentum[color] = min(0.95, freq + streak_bonus)
-    
-    # Normalize to sum to 1
-    total_momentum = sum(momentum.values())
-    if total_momentum > 0:
-        for color in momentum:
-            momentum[color] /= total_momentum
-    
-    return momentum
-
-def analyze_number_patterns(df: pd.DataFrame, lookback: int = 120) -> Dict[str, float]:
-    """Analyze number patterns to detect under-represented numbers"""
-    if len(df) < lookback:
-        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-    
-    recent = df.tail(lookback)
-    numbers = recent["number"].astype(int).tolist()
-    colors = recent["color"].tolist()
-    
-    # Count number frequencies
-    number_counts = {i: 0 for i in range(10)}
-    for num in numbers:
-        number_counts[num] += 1
-    
-    # Find under-represented numbers
-    expected = lookback / 10
-    under_represented = []
-    for num, count in number_counts.items():
-        if count < expected * 0.7:  # 30% below expected
-            under_represented.append(num)
-    
-    if not under_represented:
-        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-    
-    # Map numbers to colors and calculate correction probabilities
-    color_probs = {"RED": 0.0, "GREEN": 0.0, "VIOLET": 0.0}
-    
-    for num in under_represented:
-        if num in [1, 2, 3, 4, 5]:
-            color_probs["RED"] += 1
-        elif num in [6, 7, 8, 9]:
-            color_probs["GREEN"] += 1
-        elif num == 0:
-            color_probs["VIOLET"] += 1
-    
-    # Normalize with confidence dampening to prevent overly confident signals
-    total = sum(color_probs.values())
-    if total > 0:
-        for color in color_probs:
-            color_probs[color] /= total
+        # Convert to numpy arrays
+        X = np.array(features_list)
+        y = np.array(targets)
         
-        # Dampen confidence based on strength of under-representation
-        max_prob = max(color_probs.values())
-        under_repr_strength = len(under_represented) / 10.0  # 0.1 to 1.0 scale
-        confidence_factor = min(0.70, 0.45 + under_repr_strength * 0.25)  # Max 0.70
+        # Split data for training and validation
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
         
-        # Apply dampening to prevent perfect 1.0 confidence
-        for color in color_probs:
-            if color_probs[color] == max_prob:
-                color_probs[color] = confidence_factor
+        # Train LightGBM model
+        model = LGBMClassifier(
+            n_estimators=100,
+            max_depth=6,
+            learning_rate=0.1,
+            random_state=42,
+            verbose=-1,
+            class_weight='balanced'  # Handle class imbalance
+        )
+        
+        model.fit(X_train, y_train)
+        
+        # Validate model
+        y_pred = model.predict(X_val)
+        accuracy = accuracy_score(y_val, y_pred)
+        print(f"🤖 ML Model Accuracy: {accuracy:.3f}")
+        
+        # Prepare features for prediction (current state)
+        current_features = []
+        
+        # Time features
+        try:
+            current_time = datetime.utcnow()
+            current_features.extend([
+                current_time.hour,
+                current_time.minute,
+                current_time.weekday()
+            ])
+        except:
+            current_features.extend([12, 0, 0])
+        
+        # Historical colors (last 3 rounds)
+        for lag in [1, 2, 3]:
+            if len(df) >= lag:
+                color = df.iloc[-lag]["color"]
+                color_encoded = {"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0)
+                current_features.append(color_encoded)
             else:
-                color_probs[color] *= (1 - confidence_factor) / 2
-    else:
-        color_probs = {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-    
-    return color_probs
+                current_features.append(0)
+        
+        # Frequency features
+        for window in [10, 30, 50]:
+            if len(df) >= window:
+                window_data = df.tail(window)
+                red_freq = (window_data["color"] == "RED").sum() / window
+                green_freq = (window_data["color"] == "GREEN").sum() / window
+                violet_freq = (window_data["color"] == "VIOLET").sum() / window
+                current_features.extend([red_freq, green_freq, violet_freq])
+            else:
+                current_features.extend([0.33, 0.33, 0.34])
+        
+        # Current streak
+        if len(df) >= 2:
+            current_color = df.iloc[-1]["color"]
+            streak = 1
+            for i in range(len(df)-2, max(0, len(df)-10), -1):
+                if df.iloc[i]["color"] == current_color:
+                    streak += 1
+                else:
+                    break
+            current_features.append(min(streak, 10))
+        else:
+            current_features.append(1)
+        
+        # Number patterns
+        if len(df) >= 20:
+            recent_numbers = df.tail(20)["number"].astype(int).tolist()
+            for num in range(10):
+                current_features.append(recent_numbers.count(num) / 20)
+        else:
+            current_features.extend([0.1] * 10)
+        
+        # Make prediction
+        X_current = np.array([current_features])
+        probabilities = model.predict_proba(X_current)[0]
+        
+        # Map probabilities back to colors
+        color_probs = {
+            "RED": probabilities[0],
+            "GREEN": probabilities[1], 
+            "VIOLET": probabilities[2]
+        }
+        
+        print(f"🤖 ML Prediction: R={color_probs['RED']:.3f}, G={color_probs['GREEN']:.3f}, V={color_probs['VIOLET']:.3f}")
+        
+        return color_probs
+        
+    except Exception as e:
+        print(f"❌ ML Model Error: {e}")
+        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
 
-def analyze_time_based_patterns(df: pd.DataFrame, min_data: int = 200) -> Dict[str, float]:
-    """Analyze time-based patterns (hourly color distributions)"""
-    if len(df) < min_data:
-        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-    
-    # Add hour column
-    df_copy = df.copy()
-    df_copy["hour"] = pd.to_datetime(df_copy["scraped_at"]).dt.hour
-    
-    # Get current hour
-    current_hour = datetime.utcnow().hour
-    
-    # Find data for current hour
-    hour_data = df_copy[df_copy["hour"] == current_hour]
-    
-    if len(hour_data) < 20:  # Need at least 20 data points for this hour
-        return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-    
-    # Calculate hourly color distribution
-    color_counts = hour_data["color"].value_counts()
-    total = len(hour_data)
-    
-    probs = {}
-    for color in ["RED", "GREEN", "VIOLET"]:
-        count = color_counts.get(color, 0)
-        probs[color] = count / total
-    
-    return probs
+# ====== LEGACY MOMENTUM-BASED ANALYSIS SYSTEM (DEPRECATED) ======
+
+# Old statistical analysis functions removed - replaced with Machine Learning model
 
 def detect_volatility(df: pd.DataFrame, lookback: int = 30) -> float:
     """Detect market volatility to avoid unstable periods"""
@@ -782,76 +852,41 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
         return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
 
 def detect_strong_signals(df: pd.DataFrame, 
-                         momentum_threshold: float = 0.6,
-                         pattern_threshold: float = 0.65,
-                         time_threshold: float = 0.6,
-                         ensemble_threshold: float = 0.7,
+                         ml_threshold: float = 0.70,
+                         size_threshold: float = 0.70,
                          conn_str: str = None) -> List[Dict]:
-    """Detect strong signals using multiple analysis methods with enhanced filtering"""
+    """Detect strong signals using Machine Learning model with enhanced filtering"""
     signals = []
     
-    # Enhanced filtering: Check volatility (temporarily disabled for debugging)
+    # Enhanced filtering: Check volatility
     volatility = detect_volatility(df)
     print(f"🌊 Volatility check: {volatility:.3f} (threshold: 0.75)")
-    if volatility > 0.90:  # Raised threshold to allow more signals
+    if volatility > 0.90:  # Skip during extreme volatile periods
         print("⚠️  Skipping due to extreme volatility")
-        return []  # Skip only during extreme volatile periods
+        return []
     
-    # Note: Performance analysis removed - using fixed high thresholds for quality
+    # 1. Machine Learning Analysis (Primary Method)
+    print("🤖 Running Machine Learning analysis...")
+    ml_probs = analyze_with_ml_model(df, min_data_points=500)
+    max_ml_confidence = max(ml_probs.values())
+    print(f"🤖 ML analysis: max={max_ml_confidence:.3f} (threshold: {ml_threshold:.3f})")
     
-    # 1. Color Momentum Analysis
-    momentum_probs = analyze_color_momentum(df)
-    max_momentum = max(momentum_probs.values())
-    print(f"🎨 Momentum analysis: max={max_momentum:.3f} (threshold: {momentum_threshold:.3f})")
-    
-    if max_momentum >= momentum_threshold:
-        best_color = max(momentum_probs, key=momentum_probs.get)
+    if max_ml_confidence >= ml_threshold:
+        best_color = max(ml_probs, key=ml_probs.get)
         signals.append({
             "type": "color",
             "color": best_color,
-            "confidence": max_momentum,
-            "method": "ColorMomentum",
-            "reason": f"Color momentum suggests {best_color} with {max_momentum:.3f} confidence",
-            "probs": momentum_probs
+            "confidence": max_ml_confidence,
+            "method": "MachineLearning",
+            "reason": f"ML model predicts {best_color} with {max_ml_confidence:.3f} confidence",
+            "probs": ml_probs
         })
     
-    # 2. Number Pattern Analysis
-    pattern_probs = analyze_number_patterns(df)
-    max_pattern = max(pattern_probs.values())
-    print(f"🔢 Pattern analysis: max={max_pattern:.3f} (threshold: {pattern_threshold:.3f})")
-    
-    if max_pattern >= pattern_threshold:
-        best_color = max(pattern_probs, key=pattern_probs.get)
-        signals.append({
-            "type": "color",
-            "color": best_color,
-            "confidence": max_pattern,
-            "method": "NumberPattern",
-            "reason": f"Number pattern suggests {best_color} correction with {max_pattern:.3f} confidence",
-            "probs": pattern_probs
-        })
-    
-    # 3. Time-based Pattern Analysis
-    time_probs = analyze_time_based_patterns(df)
-    max_time = max(time_probs.values())
-    print(f"⏰ Time analysis: max={max_time:.3f} (threshold: {time_threshold:.3f})")
-    
-    if max_time >= time_threshold:
-        best_color = max(time_probs, key=time_probs.get)
-        signals.append({
-            "type": "color",
-            "color": best_color,
-            "confidence": max_time,
-            "method": "TimePattern",
-            "reason": f"Time pattern suggests {best_color} bias with {max_time:.3f} confidence",
-            "probs": time_probs
-        })
-    
-    # 4. Big/Small Analysis
+    # 2. Big/Small Analysis (Keep this as it's complementary to color prediction)
     size_probs, size_conf, size_reason = analyze_big_small(df)
-    print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: 0.72)")
+    print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
     
-    if size_conf >= 0.70:  # Stricter threshold for size predictions
+    if size_conf >= size_threshold:
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
         signals.append({
             "type": "size",
@@ -862,28 +897,35 @@ def detect_strong_signals(df: pd.DataFrame,
             "probs": size_probs
         })
     
-    # 5. Enhanced Ensemble Analysis - require 3+ agreeing methods
+    # 3. Ensemble Analysis (Combine ML with size if both are strong)
     color_signals = [s for s in signals if s["type"] == "color"]
-    print(f"🤝 Ensemble check: {len(color_signals)} color signals (need 3+ for ensemble)")
-    if len(color_signals) >= 3:  # Require 3+ methods
-        color_predictions = [s["color"] for s in color_signals]
-        if len(set(color_predictions)) == 1:  # All predict same color
-            best_color = color_predictions[0]
-            avg_confidence = sum(s["confidence"] for s in color_signals) / len(color_signals)
-            
-            if avg_confidence >= ensemble_threshold:
-                signals.append({
-                    "type": "color",
-                    "color": best_color,
-                    "confidence": min(0.95, avg_confidence + 0.05),  # Bonus for agreement
-                    "method": "Ensemble",
-                    "reason": f"Multiple methods agree on {best_color} with {avg_confidence:.3f} avg confidence",
-                    "probs": momentum_probs
-                })
+    size_signals = [s for s in signals if s["type"] == "size"]
+    
+    if color_signals and size_signals:
+        color_signal = color_signals[0]  # ML signal
+        size_signal = size_signals[0]    # Size signal
+        
+        # Create ensemble if both signals are strong
+        if color_signal["confidence"] >= 0.75 and size_signal["confidence"] >= 0.75:
+            ensemble_confidence = (color_signal["confidence"] + size_signal["confidence"]) / 2
+            signals.append({
+                "type": "ensemble",
+                "color": color_signal["color"],
+                "size": size_signal["size"],
+                "confidence": min(0.95, ensemble_confidence + 0.05),  # Bonus for agreement
+                "method": "Ensemble",
+                "reason": f"ML+Size ensemble: {color_signal['color']} + {size_signal['size']} with {ensemble_confidence:.3f} avg confidence",
+                "probs": ml_probs
+            })
     
     print(f"🎯 Total signals generated: {len(signals)}")
     for i, signal in enumerate(signals):
-        print(f"  Signal {i+1}: {signal['method']} - {signal.get('color', signal.get('size'))} @ {signal['confidence']:.3f}")
+        if signal["type"] == "color":
+            print(f"  Signal {i+1}: {signal['method']} - {signal['color']} @ {signal['confidence']:.3f}")
+        elif signal["type"] == "size":
+            print(f"  Signal {i+1}: {signal['method']} - {signal['size']} @ {signal['confidence']:.3f}")
+        elif signal["type"] == "ensemble":
+            print(f"  Signal {i+1}: {signal['method']} - {signal['color']} + {signal['size']} @ {signal['confidence']:.3f}")
     
     return signals
 
@@ -957,26 +999,33 @@ def format_size_alert(signal: dict, betting_period: str, accuracy: float) -> str
     
     return msg
 
-def backtest_momentum_system(df: pd.DataFrame, lookback: int = 300) -> float:
-    """Backtest the momentum system to estimate accuracy"""
-    if len(df) < lookback + 50:
+def backtest_ml_system(df: pd.DataFrame, lookback: int = 300) -> float:
+    """Backtest the ML system to estimate accuracy"""
+    if len(df) < lookback + 100:  # Need more data for ML model
         return 0.5
     
     correct_predictions = 0
     total_predictions = 0
     
-    for i in range(50, min(lookback, len(df) - 1)):
+    # Test on last 100 predictions to avoid overfitting
+    test_start = max(100, len(df) - lookback)
+    
+    for i in range(test_start, len(df) - 1):
         # Use data up to position i to predict position i+1
         train_data = df.iloc[:i+1]
         actual_color = df.iloc[i+1]["color"]
         
-        # Get prediction
-        momentum_probs = analyze_color_momentum(train_data, lookback=20)
-        predicted_color = max(momentum_probs, key=momentum_probs.get)
-        
-        if predicted_color == actual_color:
-            correct_predictions += 1
-        total_predictions += 1
+        # Get ML prediction
+        try:
+            ml_probs = analyze_with_ml_model(train_data, min_data_points=500)
+            predicted_color = max(ml_probs, key=ml_probs.get)
+            
+            if predicted_color == actual_color:
+                correct_predictions += 1
+            total_predictions += 1
+        except Exception:
+            # Skip if ML model fails
+            continue
     
     return correct_predictions / total_predictions if total_predictions > 0 else 0.5
 
@@ -1058,18 +1107,14 @@ def main():
                 print(f"❌ Invalid preset: {args.preset}")
                 return
             signals = detect_strong_signals(df, 
-                                            momentum_threshold=preset_config["momentum"],
-                                            pattern_threshold=preset_config["number_pattern"],
-                                            time_threshold=preset_config["time_pattern"],
-                                            ensemble_threshold=preset_config["ensemble"],
+                                            ml_threshold=preset_config["momentum"],
+                                            size_threshold=0.70,
                                             conn_str=cfg.neon_conn_str)
         else:
             # Use default threshold
             signals = detect_strong_signals(df, 
-                                            momentum_threshold=args.color_prob_threshold,
-                                            pattern_threshold=0.65, # Default for number pattern
-                                            time_threshold=0.6,   # Default for time pattern
-                                            ensemble_threshold=0.7, # Default for ensemble
+                                            ml_threshold=args.color_prob_threshold,
+                                            size_threshold=0.70,
                                             conn_str=cfg.neon_conn_str)
     except Exception as e:
         print(f"❌ Error detecting signals: {e}")
@@ -1104,7 +1149,7 @@ def main():
             print(f"  Probabilities: BIG={signal['probs']['BIG']:.3f}, SMALL={signal['probs']['SMALL']:.3f}")
     
     # Backtest accuracy
-    accuracy = backtest_momentum_system(df)
+    accuracy = backtest_ml_system(df)
     print(f"\n📊 Estimated System Accuracy: {accuracy:.3f} ({accuracy*100:.1f}%)")
     
     # Send alerts for strong signals
@@ -1179,7 +1224,7 @@ def main():
                     return
                 
                 # Quality gate 2: Backtest precision check
-                backtest_precision = backtest_momentum_system(df, lookback=300)
+                backtest_precision = backtest_ml_system(df, lookback=300)
                 if backtest_precision < 0.62:
                     print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.62)")
                     return
