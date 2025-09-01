@@ -790,16 +790,19 @@ def detect_strong_signals(df: pd.DataFrame,
     """Detect strong signals using multiple analysis methods with enhanced filtering"""
     signals = []
     
-    # Enhanced filtering: Check volatility
+    # Enhanced filtering: Check volatility (temporarily disabled for debugging)
     volatility = detect_volatility(df)
-    if volatility > 0.75:  # High volatility threshold
-        return []  # Skip during volatile periods
+    print(f"🌊 Volatility check: {volatility:.3f} (threshold: 0.75)")
+    if volatility > 0.90:  # Raised threshold to allow more signals
+        print("⚠️  Skipping due to extreme volatility")
+        return []  # Skip only during extreme volatile periods
     
     # Note: Performance analysis removed - using fixed high thresholds for quality
     
     # 1. Color Momentum Analysis
     momentum_probs = analyze_color_momentum(df)
     max_momentum = max(momentum_probs.values())
+    print(f"🎨 Momentum analysis: max={max_momentum:.3f} (threshold: {momentum_threshold:.3f})")
     
     if max_momentum >= momentum_threshold:
         best_color = max(momentum_probs, key=momentum_probs.get)
@@ -815,6 +818,7 @@ def detect_strong_signals(df: pd.DataFrame,
     # 2. Number Pattern Analysis
     pattern_probs = analyze_number_patterns(df)
     max_pattern = max(pattern_probs.values())
+    print(f"🔢 Pattern analysis: max={max_pattern:.3f} (threshold: {pattern_threshold:.3f})")
     
     if max_pattern >= pattern_threshold:
         best_color = max(pattern_probs, key=pattern_probs.get)
@@ -830,6 +834,7 @@ def detect_strong_signals(df: pd.DataFrame,
     # 3. Time-based Pattern Analysis
     time_probs = analyze_time_based_patterns(df)
     max_time = max(time_probs.values())
+    print(f"⏰ Time analysis: max={max_time:.3f} (threshold: {time_threshold:.3f})")
     
     if max_time >= time_threshold:
         best_color = max(time_probs, key=time_probs.get)
@@ -844,6 +849,7 @@ def detect_strong_signals(df: pd.DataFrame,
     
     # 4. Big/Small Analysis
     size_probs, size_conf, size_reason = analyze_big_small(df)
+    print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: 0.75)")
     
     if size_conf >= 0.75:  # High threshold for quality size signals
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
@@ -858,6 +864,7 @@ def detect_strong_signals(df: pd.DataFrame,
     
     # 5. Enhanced Ensemble Analysis - require 3+ agreeing methods
     color_signals = [s for s in signals if s["type"] == "color"]
+    print(f"🤝 Ensemble check: {len(color_signals)} color signals (need 3+ for ensemble)")
     if len(color_signals) >= 3:  # Require 3+ methods
         color_predictions = [s["color"] for s in color_signals]
         if len(set(color_predictions)) == 1:  # All predict same color
@@ -873,6 +880,10 @@ def detect_strong_signals(df: pd.DataFrame,
                     "reason": f"Multiple methods agree on {best_color} with {avg_confidence:.3f} avg confidence",
                     "probs": momentum_probs
                 })
+    
+    print(f"🎯 Total signals generated: {len(signals)}")
+    for i, signal in enumerate(signals):
+        print(f"  Signal {i+1}: {signal['method']} - {signal.get('color', signal.get('size'))} @ {signal['confidence']:.3f}")
     
     return signals
 
