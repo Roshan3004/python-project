@@ -1213,13 +1213,13 @@ def main():
                 
                 # Buffer requirements based on timing mode
                 if args.mid_period_mode:
-                    min_buffer = 15  # Optimized for mid-period timing
-                    print("🎯 Using 15s buffer for mid-period optimization")
+                    min_buffer = 10  # Reduced for mid-period timing
+                    print("🎯 Using 10s buffer for mid-period optimization")
                 elif args.fast_mode:
-                    min_buffer = 15  # Reduced for fast mode
-                    print("⚡ Using 15s buffer for fast mode")
+                    min_buffer = 10  # Reduced for fast mode
+                    print("⚡ Using 10s buffer for fast mode")
                 else:
-                    min_buffer = 20  # Standard buffer
+                    min_buffer = 15  # Reduced standard buffer
                     print(f"🛡️  Using {min_buffer}s safety buffer")
                 
                 betting_period = ensure_min_time_buffer(df, initial_period, min_buffer_seconds=min_buffer)
@@ -1231,19 +1231,31 @@ def main():
                 
                 # Quality gates for alert sending
                 current_time = datetime.utcnow()
+                
+                # Calculate ETA more accurately
                 try:
                     if len(betting_period) >= 12:
+                        # Parse the period ID to get the target time
                         target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+                        # Add 1 minute to get the actual betting time
+                        target_dt = target_dt + timedelta(minutes=1)
                     else:
+                        # Fallback: next minute boundary
                         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
                 except Exception:
+                    # Fallback: next minute boundary
                     target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
                 
                 eta_seconds = max(0, int((target_dt - current_time).total_seconds()))
                 
-                # Quality gate 1: ETA check
-                if eta_seconds < 25:
-                    print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < 25s)")
+                # Debug timing information
+                print(f"🕐 Current time: {current_time.strftime('%H:%M:%S')}")
+                print(f"🎯 Target time: {target_dt.strftime('%H:%M:%S')}")
+                print(f"⏱️  ETA: {eta_seconds} seconds")
+                
+                # Quality gate 1: ETA check (reduced threshold for better signal generation)
+                if eta_seconds < 15:  # Reduced from 25 to 15 seconds
+                    print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < 15s)")
                     return
                 
                 # Quality gate 2: Backtest precision check
