@@ -272,10 +272,10 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                 cur.execute(
                     """
                     SELECT id, anchor_period_id, predicted_color, predicted_number
-                    FROM prediction_alerts
-                    WHERE resolved_at IS NULL
-                    ORDER BY created_at ASC
-                    LIMIT %s
+                        FROM prediction_alerts
+                        WHERE resolved_at IS NULL
+                        ORDER BY created_at ASC
+                        LIMIT %s
                     """,
                     (batch_limit,)
                 )
@@ -573,7 +573,7 @@ def summarize_flags(flags: Dict[str,bool]) -> Tuple[bool, str]:
 
 # ====== NEW MOMENTUM-BASED ANALYSIS SYSTEM ======
 
-def analyze_color_momentum(df: pd.DataFrame, lookback: int = 20) -> Dict[str, float]:
+def analyze_color_momentum(df: pd.DataFrame, lookback: int = 50) -> Dict[str, float]:
     """Analyze color momentum based on recent frequency and streaks"""
     if len(df) < lookback:
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
@@ -614,7 +614,7 @@ def analyze_color_momentum(df: pd.DataFrame, lookback: int = 20) -> Dict[str, fl
     
     return momentum
 
-def analyze_number_patterns(df: pd.DataFrame, lookback: int = 100) -> Dict[str, float]:
+def analyze_number_patterns(df: pd.DataFrame, lookback: int = 120) -> Dict[str, float]:
     """Analyze number patterns to detect under-represented numbers"""
     if len(df) < lookback:
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
@@ -851,7 +851,7 @@ def detect_strong_signals(df: pd.DataFrame,
     size_probs, size_conf, size_reason = analyze_big_small(df)
     print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: 0.72)")
     
-    if size_conf >= 0.85:  # Drastically increased - size predictions consistently failing
+    if size_conf >= 0.70:  # Stricter threshold for size predictions
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
         signals.append({
             "type": "size",
@@ -1046,8 +1046,12 @@ def main():
         if len(df) < 100:
             print("❌ Insufficient data for analysis (need at least 100 rounds)")
             return
-        
-        # Detect signals with enhanced filtering
+    except Exception as e:
+        print(f"❌ Error loading data: {e}")
+        return
+    
+    # Detect signals with enhanced filtering
+    try:
         if args.preset != "balanced":
             preset_config = get_preset_config(args.preset)
             if not preset_config:
@@ -1082,7 +1086,7 @@ def main():
         print("No strong signals detected with current threshold.")
         print("Consider using --preset aggressive or --preset very_aggressive for more signals.")
         return
-    
+
     # Display signals
     print(f"\n🎯 Strong Signals Detected: {len(signals)}")
     for i, signal in enumerate(signals, 1):
@@ -1121,20 +1125,20 @@ def main():
         signals = sorted(signals, key=lambda x: x["confidence"], reverse=True)
 
         # Prefer SIZE signal if its confidence >= color confidence + margin
-        prefer_size_margin = 0.03
+        prefer_size_margin = 0.05  # Increased margin for size preference
         best_signal = None
         if signals:
             top = signals[0]
             top_color = next((s for s in signals if s["type"] == "color"), None)
             top_size = next((s for s in signals if s["type"] == "size"), None)
-            if top_color and top_size and (top_size["confidence"] >= top_color["confidence"] + prefer_size_margin):
+            if top_color and top_size and (top_size["confidence"] >= 0.70) and (top_size["confidence"] >= top_color["confidence"] + prefer_size_margin):
                 best_signal = top_size
             else:
                 best_signal = top
             
-            # Only alert if: Ensemble OR exceptionally strong single-method (>=0.47)
+            # Only alert if: Ensemble OR exceptionally strong single-method (>=0.72)
             is_ensemble = (best_signal.get("method") == "Ensemble")
-            exceptionally_strong = (best_signal["confidence"] >= 0.47)
+            exceptionally_strong = (best_signal["confidence"] >= 0.72)
             if is_ensemble or exceptionally_strong:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 initial_period = get_next_betting_period(df)
@@ -1156,6 +1160,38 @@ def main():
                 # The logic is: analyze anchor period → predict for betting period (with buffer)
                 if betting_period != initial_period:
                     print(f"⏰ Time buffer applied - betting on period {betting_period} (shifted from {initial_period})")
+                
+                # Quality gates for alert sending
+                current_time = datetime.utcnow()
+                try:
+                    if len(betting_period) >= 12:
+                        target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+                    else:
+                        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                except Exception:
+                    target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                
+                eta_seconds = max(0, int((target_dt - current_time).total_seconds()))
+                
+                # Quality gate 1: ETA check
+                if eta_seconds < 25:
+                    print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < 25s)")
+                    return
+                
+                # Quality gate 2: Backtest precision check
+                backtest_precision = backtest_momentum_system(df, lookback=300)
+                if backtest_precision < 0.62:
+                    print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.62)")
+                    return
+                
+                # Quality gate 3: Violet share check (avoid periods with too much violet)
+                recent_colors = df.tail(120)["color"].tolist()
+                violet_share = recent_colors.count("VIOLET") / len(recent_colors)
+                if violet_share >= 0.26:
+                    print(f"❌ Skipping alert: Violet share too high ({violet_share:.3f} >= 0.26)")
+                    return
+                
+                print(f"✅ Quality gates passed: ETA={eta_seconds}s, precision={backtest_precision:.3f}, violet={violet_share:.3f}")
                 
                 # Create unique alert key to prevent duplicates
                 if best_signal["type"] == "color":

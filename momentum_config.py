@@ -4,16 +4,16 @@ Tune these parameters to get your desired 7-15 signals per day
 """
 
 # ====== SIGNAL GENERATION THRESHOLDS ======
-# Manual thresholds (tuned for high accuracy - fewer but stronger signals)
-MOMENTUM_CONFIDENCE_THRESHOLD = 0.72
-NUMBER_PATTERN_THRESHOLD = 0.75
-TIME_PATTERN_THRESHOLD = 0.78
-ENSEMBLE_THRESHOLD = 0.80
+# Manual thresholds (tuned for 5–10 strong signals/day with higher accuracy)
+MOMENTUM_CONFIDENCE_THRESHOLD = 0.66
+NUMBER_PATTERN_THRESHOLD = 0.70
+TIME_PATTERN_THRESHOLD = 0.68
+ENSEMBLE_THRESHOLD = 0.72
 
 # ====== LOOKBACK PERIODS ======
 # Adjust these to change how much historical data is analyzed
-MOMENTUM_LOOKBACK = 25                    # Default: 25 rounds (was 20)
-NUMBER_PATTERN_LOOKBACK = 35              # Default: 35 rounds (was 30)
+MOMENTUM_LOOKBACK = 50                    # Default: 25 rounds (was 20)
+NUMBER_PATTERN_LOOKBACK = 120              # Default: 35 rounds (was 30)
 TIME_PATTERN_MIN_DATA = 50                # Default: 50 rounds minimum for time analysis
 
 # ====== MOMENTUM SCORING WEIGHTS ======
@@ -109,14 +109,14 @@ def get_preset_config(preset_name: str):
             "momentum": 0.65,
             "number_pattern": 0.68,
             "time_pattern": 0.70,
-            "ensemble": 0.75,
+            "ensemble": 0.72,
             "aggressive": False
         },
         "balanced": {
-            "momentum": 0.68,
-            "number_pattern": 0.70,
-            "time_pattern": 0.72,
-            "ensemble": 0.74,
+            "momentum": 0.60,
+            "number_pattern": 0.62,
+            "time_pattern": 0.64,
+            "ensemble": 0.66,
             "aggressive": True
         },
         "aggressive": {
