@@ -655,8 +655,15 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
                 # Count of each number (0-9)
                 for num in range(10):
                     features.append(recent_numbers.count(num) / 20)
+                
+                # Additional number pattern features
+                features.append(max(recent_numbers))  # Max number in recent 20
+                features.append(min(recent_numbers))  # Min number in recent 20
+                features.append(np.mean(recent_numbers))  # Average number
+                features.append(np.std(recent_numbers))  # Standard deviation
             else:
                 features.extend([0.1] * 10)  # Default uniform distribution
+                features.extend([5, 0, 5, 0])  # Default for additional features
             
             # Add features to list
             features_list.append(features)
@@ -681,12 +688,14 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
         
         # Train LightGBM model (optimized for 20-second window)
         model = LGBMClassifier(
-            n_estimators=100,  # More trees for better accuracy in 20s
-            max_depth=5,       # Deeper trees for better patterns
-            learning_rate=0.1,  # Balanced learning rate
+            n_estimators=150,  # More trees for better accuracy
+            max_depth=6,       # Deeper trees for better patterns
+            learning_rate=0.08,  # Lower learning rate for better accuracy
             random_state=42,
             verbose=-1,
-            class_weight='balanced'  # Handle class imbalance
+            class_weight='balanced',  # Handle class imbalance
+            subsample=0.8,     # Add subsampling for better generalization
+            colsample_bytree=0.8  # Add feature sampling
         )
         
         model.fit(X_train, y_train)
@@ -748,8 +757,15 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
             recent_numbers = df.tail(20)["number"].astype(int).tolist()
             for num in range(10):
                 current_features.append(recent_numbers.count(num) / 20)
+            
+            # Additional number pattern features
+            current_features.append(max(recent_numbers))  # Max number in recent 20
+            current_features.append(min(recent_numbers))  # Min number in recent 20
+            current_features.append(np.mean(recent_numbers))  # Average number
+            current_features.append(np.std(recent_numbers))  # Standard deviation
         else:
-            current_features.extend([0.1] * 10)
+            current_features.extend([0.1] * 10)  # Default uniform distribution
+            current_features.extend([5, 0, 5, 0])  # Default for additional features
         
         # Make prediction
         X_current = np.array([current_features])
@@ -875,7 +891,10 @@ def detect_strong_signals(df: pd.DataFrame,
     max_ml_confidence = max(ml_probs.values())
     print(f"🤖 ML analysis: max={max_ml_confidence:.3f} (threshold: {ml_threshold:.3f})")
     
-    if max_ml_confidence >= ml_threshold:
+    # Lower threshold for ML signals to generate more alerts
+    ml_alert_threshold = max(0.55, ml_threshold - 0.10)  # 10% lower than preset threshold
+    
+    if max_ml_confidence >= ml_alert_threshold:
         best_color = max(ml_probs, key=ml_probs.get)
         signals.append({
             "type": "color",
@@ -890,7 +909,10 @@ def detect_strong_signals(df: pd.DataFrame,
     size_probs, size_conf, size_reason = analyze_big_small(df)
     print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
     
-    if size_conf >= size_threshold:
+    # Lower threshold for size signals to generate more alerts
+    size_alert_threshold = max(0.60, size_threshold - 0.10)  # 10% lower than preset threshold
+    
+    if size_conf >= size_alert_threshold:
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
         signals.append({
             "type": "size",
