@@ -109,7 +109,7 @@ def get_preset_config(preset_name: str):
             "momentum": 0.65,
             "number_pattern": 0.68,
             "time_pattern": 0.70,
-            "ensemble": 0.72,
+            "ensemble": 0.75,
             "aggressive": False
         },
         "balanced": {
