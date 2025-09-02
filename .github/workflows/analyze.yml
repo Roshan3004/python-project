@@ -80,7 +80,7 @@ jobs:
           PRESET: ${{ github.event.inputs.preset || 'balanced' }}
           MAX_SIGNALS: ${{ github.event.inputs.max_signals || 3 }}
           MIN_SOURCES: ${{ github.event.inputs.min_sources || 2 }}
-          COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || 0.68 }}
+          COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || 0.67 }}
           LIMIT: ${{ github.event.inputs.limit || 2000 }}
         run: |
           echo "🚀 Starting WinGo Momentum Analysis (Mid-period optimized)"
