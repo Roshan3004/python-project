@@ -625,7 +625,7 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
                     # Encode colors as numbers
                     color_encoded = {"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0)
                     features.append(color_encoded)
-                else:
+    else:
                     features.append(0)  # Default for missing data
             
             # Frequency features (last 10, 30, 50 rounds)
@@ -725,7 +725,7 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
                 color = df.iloc[-lag]["color"]
                 color_encoded = {"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0)
                 current_features.append(color_encoded)
-            else:
+    else:
                 current_features.append(0)
         
         # Frequency features
@@ -868,7 +868,7 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
                     "confidence_penalty": confidence_penalty,
                     "method_penalty": method_penalty
                 }
-    except Exception:
+        except Exception:
         return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
 
 def detect_strong_signals(df: pd.DataFrame, 
@@ -970,11 +970,11 @@ def format_color_alert(signal: dict, betting_period: str, accuracy: float) -> st
             target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
         else:
             target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
-    except Exception:
+        except Exception:
         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     seconds_until = max(0, int((target_dt - current_time).total_seconds()))
     
-    msg = (
+        msg = (
         f"🎨 WinGo Color Signal: {color}\n"
         f"🔢 Bet on Period: {betting_period}\n"
         f"📊 Method: {method}\n"
@@ -1066,6 +1066,9 @@ def main():
     parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
     parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
     parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
+    # New: tunable alert gates so we can adjust without code edits
+    parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
+    parser.add_argument("--violet_max_share", type=float, default=0.26, help="Maximum allowed recent VIOLET share (0-1) for alert")
     args = parser.parse_args()
     
     print("🚀 WinGo Momentum Analysis System")
@@ -1253,9 +1256,9 @@ def main():
                 print(f"🎯 Target time: {target_dt.strftime('%H:%M:%S')}")
                 print(f"⏱️  ETA: {eta_seconds} seconds")
                 
-                # Quality gate 1: ETA check (reduced threshold for better signal generation)
-                if eta_seconds < 15:  # Reduced from 25 to 15 seconds
-                    print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < 15s)")
+                # Quality gate 1: ETA check (configurable)
+                if eta_seconds < args.eta_min_seconds:
+                    print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < {args.eta_min_seconds}s)")
                     return
                 
                 # Quality gate 2: Backtest precision check
@@ -1267,8 +1270,8 @@ def main():
                 # Quality gate 3: Violet share check (avoid periods with too much violet)
                 recent_colors = df.tail(120)["color"].tolist()
                 violet_share = recent_colors.count("VIOLET") / len(recent_colors)
-                if violet_share >= 0.26:
-                    print(f"❌ Skipping alert: Violet share too high ({violet_share:.3f} >= 0.26)")
+                if violet_share >= args.violet_max_share:
+                    print(f"❌ Skipping alert: Violet share too high ({violet_share:.3f} >= {args.violet_max_share})")
                     return
                 
                 print(f"✅ Quality gates passed: ETA={eta_seconds}s, precision={backtest_precision:.3f}, violet={violet_share:.3f}")
@@ -1303,20 +1306,20 @@ def main():
                 sent_alerts.add(alert_key)
                 
                 # Send Telegram alert
-                ok = send_telegram(cfg, msg)
+        ok = send_telegram(cfg, msg)
                 if best_signal["type"] == "color":
                     print(f"Alert sent for {best_signal['color']}: {ok}")
                 else:
                     print(f"Alert sent for {best_signal['size']}: {ok}")
                 
                 # Log to database if enabled
-                if args.log_to_db:
+        if args.log_to_db:
                     try:
                         anchor_pid = str(df["period_id"].iloc[-1])
                         if best_signal["type"] == "color":
-                            log_alert_to_neon(
-                                cfg.neon_conn_str,
-                                anchor_pid,
+            log_alert_to_neon(
+                cfg.neon_conn_str,
+                anchor_pid,
                                 best_signal["color"],
                                 None,  # No number prediction in new system
                                 best_signal["probs"],

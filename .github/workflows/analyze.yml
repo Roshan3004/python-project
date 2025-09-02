@@ -24,7 +24,8 @@ on:
         type: number
   # Run strictly every 10 minutes (UTC). We will skip during 01:00–09:00 IST at runtime.
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/10 * * * *"   # :00, :10, :20, :30, :40, :50
+    - cron: "5-59/10 * * * *" # :05, :15, :25, :35, :45, :55 (reliability hedge)
 
 concurrency:
   group: analyze-wingo
@@ -93,4 +94,6 @@ jobs:
             --enable_alert \
             --log_to_db \
             --fast_mode \
-            --mid_period_mode
+            --mid_period_mode \
+            --eta_min_seconds 10 \
+            --violet_max_share 0.30
