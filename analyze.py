@@ -972,6 +972,8 @@ def format_color_alert(signal: dict, betting_period: str, accuracy: float) -> st
             target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     except Exception:
         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    if target_dt <= current_time:
+        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     seconds_until = max(0, int((target_dt - current_time).total_seconds()))
     
     msg = (
@@ -1006,6 +1008,8 @@ def format_size_alert(signal: dict, betting_period: str, accuracy: float) -> str
         else:
             target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     except Exception:
+        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+    if target_dt <= current_time:
         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     seconds_until = max(0, int((target_dt - current_time).total_seconds()))
     
@@ -1238,15 +1242,19 @@ def main():
                 # Calculate ETA more accurately
                 try:
                     if len(betting_period) >= 12:
-                        # Parse the period ID to get the target time
+                        # Parse the period ID to get the target time (UTC minute)
                         target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
-                        # Add 1 minute to get the actual betting time
+                        # Actual betting time is the next minute
                         target_dt = target_dt + timedelta(minutes=1)
                     else:
                         # Fallback: next minute boundary
                         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
                 except Exception:
                     # Fallback: next minute boundary
+                    target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+
+                # Guard: ensure target time is in the future
+                if target_dt <= current_time:
                     target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
                 
                 eta_seconds = max(0, int((target_dt - current_time).total_seconds()))
