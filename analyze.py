@@ -296,10 +296,10 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                     # Get the actual outcome for that period
                     cur.execute(
                         """
-                        SELECT number, color
-                        FROM game_history
+                            SELECT number, color
+                            FROM game_history
                         WHERE period_id = %s
-                        LIMIT 1
+                            LIMIT 1
                         """,
                         (next_period_id,)
                     )

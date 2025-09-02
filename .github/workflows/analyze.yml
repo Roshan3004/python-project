@@ -22,12 +22,9 @@ on:
         required: false
         default: "5"
         type: number
-  # Every 10 minutes during active hours (9AM-1:30AM IST = 03:30-20:00 UTC)
-  # Sleep time excluded: 1:30AM-9AM IST (20:00-03:30 UTC)
+  # Run strictly every 10 minutes (UTC). We will skip during 01:00–09:00 IST at runtime.
   schedule:
-    - cron: "*/10 4-19 * * *"   # 9:30AM-1:00AM IST every 10 min
-    - cron: "0,10,20,30 3 * * *"  # 9:00AM-9:30AM IST every 10 min  
-    - cron: "0 20 * * *"        # 1:30AM IST final run
+    - cron: "*/10 * * * *"
 
 concurrency:
   group: analyze-wingo
@@ -44,6 +41,14 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: requirements.txt
+
+      - name: Skip during sleep window (01:00–09:00 IST)
+        run: |
+          ist=$(TZ=Asia/Kolkata date +%H)
+          if [ $ist -ge 1 ] && [ $ist -lt 9 ]; then
+            echo "⏭️  Inside sleep window (IST 01:00–09:00). Skipping run."
+            exit 0
+          fi
 
       - name: Install deps
         run: |
