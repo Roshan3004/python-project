@@ -56,11 +56,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Fresh data guarantee timing (1m10s post-period)
+      - name: Fresh data guarantee timing (1m11s post-period)
         run: |
           echo "🕐 Calculating timing to guarantee fresh period data..."
           current_second=$(date +%S)
-          target_seconds=70  # 1m10s to ensure period completion + scraping
+          target_seconds=71  # 1m11s to ensure period completion + scraping
           
           if [ $current_second -le $target_seconds ]; then
             sleep_time=$((target_seconds - current_second))
