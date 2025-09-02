@@ -625,7 +625,7 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
                     # Encode colors as numbers
                     color_encoded = {"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0)
                     features.append(color_encoded)
-    else:
+                else:
                     features.append(0)  # Default for missing data
             
             # Frequency features (last 10, 30, 50 rounds)
@@ -725,7 +725,7 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
                 color = df.iloc[-lag]["color"]
                 color_encoded = {"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0)
                 current_features.append(color_encoded)
-    else:
+            else:
                 current_features.append(0)
         
         # Frequency features
@@ -868,7 +868,7 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
                     "confidence_penalty": confidence_penalty,
                     "method_penalty": method_penalty
                 }
-        except Exception:
+    except Exception:
         return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
 
 def detect_strong_signals(df: pd.DataFrame, 
@@ -970,11 +970,11 @@ def format_color_alert(signal: dict, betting_period: str, accuracy: float) -> st
             target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
         else:
             target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
-        except Exception:
+    except Exception:
         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     seconds_until = max(0, int((target_dt - current_time).total_seconds()))
     
-        msg = (
+    msg = (
         f"🎨 WinGo Color Signal: {color}\n"
         f"🔢 Bet on Period: {betting_period}\n"
         f"📊 Method: {method}\n"
@@ -1306,20 +1306,20 @@ def main():
                 sent_alerts.add(alert_key)
                 
                 # Send Telegram alert
-        ok = send_telegram(cfg, msg)
+                ok = send_telegram(cfg, msg)
                 if best_signal["type"] == "color":
                     print(f"Alert sent for {best_signal['color']}: {ok}")
                 else:
                     print(f"Alert sent for {best_signal['size']}: {ok}")
                 
                 # Log to database if enabled
-        if args.log_to_db:
+                if args.log_to_db:
                     try:
                         anchor_pid = str(df["period_id"].iloc[-1])
                         if best_signal["type"] == "color":
-            log_alert_to_neon(
-                cfg.neon_conn_str,
-                anchor_pid,
+                            log_alert_to_neon(
+                                cfg.neon_conn_str,
+                                anchor_pid,
                                 best_signal["color"],
                                 None,  # No number prediction in new system
                                 best_signal["probs"],
