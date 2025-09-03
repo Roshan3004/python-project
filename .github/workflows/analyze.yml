@@ -45,10 +45,23 @@ jobs:
 
       - name: Skip during sleep window (01:00–09:00 IST)
         run: |
-          ist=$(TZ=Asia/Kolkata date +%H)
-          if [ $ist -ge 1 ] && [ $ist -lt 9 ]; then
-            echo "⏭️  Inside sleep window (IST 01:00–09:00). Skipping run."
+          # Get IST hour (remove leading zeros for comparison)
+          ist_hour=$(TZ=Asia/Kolkata date +%H | sed 's/^0*//')
+          echo "🕐 Current IST hour: $ist_hour"
+          
+          # Handle edge case: if empty after removing zeros (00 hour), set to 0
+          if [ -z "$ist_hour" ]; then
+            ist_hour=0
+          fi
+          
+          # Check if in sleep window: 1 AM to 8:59 AM (1-8 inclusive)
+          if [ $ist_hour -ge 1 ] && [ $ist_hour -le 8 ]; then
+            echo "😴 Inside sleep window (IST 01:00–09:00). Skipping run."
+            echo "sleep_window=true" >> $GITHUB_OUTPUT
             exit 0
+          else
+            echo "🚀 Outside sleep window. Proceeding with analysis."
+            echo "sleep_window=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Install deps
