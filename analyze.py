@@ -724,7 +724,7 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
         print(f"ML Cross-Validation Accuracy: {avg_cv_score:.3f} (+/-{cv_scores.std():.3f})")
         
         # If CV accuracy is too low, fallback to momentum
-        if avg_cv_score < 0.40:  # Slightly higher threshold for quality
+        if avg_cv_score < 0.35:  # Lowered back for signal generation
             print("Warning: ML accuracy too low, using momentum fallback")
             return analyze_momentum_fallback(df)
         
@@ -815,6 +815,7 @@ def analyze_momentum_fallback(df: pd.DataFrame) -> Dict[str, float]:
     """
     Fallback strategy using momentum analysis when ML fails.
     """
+    print("🔄 Using momentum fallback strategy")
     if len(df) < 50:
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
     
@@ -1010,8 +1011,8 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
         return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
 
 def detect_strong_signals(df: pd.DataFrame, 
-                         ml_threshold: float = 0.58,  # Lowered for more signals
-                         size_threshold: float = 0.72,  # Balanced for quality
+                         ml_threshold: float = 0.52,  # Further lowered for signal generation
+                         size_threshold: float = 0.68,  # Lowered for more signals
                          conn_str: str = None) -> List[Dict]:
     """Detect strong signals using Machine Learning model with enhanced filtering"""
     signals = []
@@ -1052,7 +1053,9 @@ def detect_strong_signals(df: pd.DataFrame,
     print(f"Hybrid ensemble: max={max_hybrid_confidence:.3f}")
     
     # Use hybrid probabilities for alerts (more robust than ML alone)
-    ml_alert_threshold = max(0.52, ml_threshold - 0.06)  # Smaller reduction for balance
+    ml_alert_threshold = max(0.48, ml_threshold - 0.08)  # Larger reduction for more signals
+    
+    print(f"🎯 ML alert threshold: {ml_alert_threshold:.3f}, Max confidence: {max_hybrid_confidence:.3f}")
     
     if max_hybrid_confidence >= ml_alert_threshold:
         best_color = max(hybrid_probs, key=hybrid_probs.get)
@@ -1070,7 +1073,9 @@ def detect_strong_signals(df: pd.DataFrame,
     print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
     
     # Balanced threshold for size signals
-    size_alert_threshold = max(0.68, size_threshold - 0.04)  # Smaller reduction for quality
+    size_alert_threshold = max(0.62, size_threshold - 0.06)  # Larger reduction for more signals
+    
+    print(f"⚖️  Size alert threshold: {size_alert_threshold:.3f}, Confidence: {size_conf:.3f}")
     
     if size_conf >= size_alert_threshold:
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
@@ -1392,9 +1397,11 @@ def main():
             else:
                 best_signal = top
             
-            # Only alert if: Ensemble OR strong single-method (>=0.58)
+            # Only alert if: Ensemble OR moderate single-method (>=0.50)
             is_ensemble = (best_signal.get("method") == "Ensemble")
-            exceptionally_strong = (best_signal["confidence"] >= 0.58)  # Lowered for more signals
+            exceptionally_strong = (best_signal["confidence"] >= 0.50)  # Further lowered for signal generation
+            
+            print(f"🔍 Alert gate check: Ensemble={is_ensemble}, Strong={exceptionally_strong} (conf: {best_signal['confidence']:.3f})")
             if is_ensemble or exceptionally_strong:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 initial_period = get_next_betting_period(df)
@@ -1450,10 +1457,10 @@ def main():
                     print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < {args.eta_min_seconds}s)")
                     return
                 
-                # Quality gate 2: Backtest precision check (relaxed)
+                # Quality gate 2: Backtest precision check (very relaxed)
                 backtest_precision = backtest_ml_system(df, lookback=300)
-                if backtest_precision < 0.58:  # Lowered threshold
-                    print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.58)")
+                if backtest_precision < 0.52:  # Much lower threshold for signal generation
+                    print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.52)")
                     return
                 
                 # Quality gate 3: Violet share check (avoid periods with too much violet)
