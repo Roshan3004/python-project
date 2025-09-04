@@ -579,170 +579,175 @@ def summarize_flags(flags: Dict[str,bool]) -> Tuple[bool, str]:
 
 def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[str, float]:
     """
-    Enhanced ML approach with RandomForest and improved feature engineering.
-    
-    Enhanced Features:
-    - Multi-window color frequencies (10, 20, 50 rounds)
-    - Advanced streak patterns (current + alternating)
-    - Time patterns (hour + minute-based cycles)
-    - Number sum patterns and parity analysis
-    - Volatility indicators
-    - Momentum indicators
-    - Fallback to momentum if ML fails
+    Use LightGBM to predict next round color with advanced features.
+
+    Features:
+    - Time of day (hour, minute, weekday)
+    - Colors from 1, 2, 3 rounds ago (encoded)
+    - RED/GREEN/VIOLET frequencies over last 10, 30, 50 rounds
+    - Current color streak length (capped at 10)
+    - Number distribution over last 20 (counts normalized) + summary stats
+    - Number volatility std over last 15 and 45 rounds
+    - Time since last VIOLET
+    - Markov BIG probability from analyze_big_small() as a numeric feature
+    - Lagged numbers 1 and 2 rounds ago
     """
     if len(df) < min_data_points:
-        print(f"Warning: Insufficient data for ML model (need {min_data_points}, have {len(df)})")
+        print(f"⚠️  Insufficient data for ML model (need {min_data_points}, have {len(df)})")
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-    
+
     try:
-        # Use simpler, more robust features
         features_list = []
         targets = []
-        
-        # Use last 800 rounds for training (more data for better patterns)
+
         train_data = df.tail(min(800, len(df))).copy()
-        
-        # Increase training samples for better learning
-        max_samples = min(400, len(train_data) - 50)  # Max 400 training samples
+        max_samples = min(300, len(train_data) - 50)
         start_idx = max(50, len(train_data) - max_samples - 50)
-        
+
         for i in range(start_idx, len(train_data)):
             features = []
-            
-            # Enhanced time features
+
+            # Time features
             try:
                 timestamp = pd.to_datetime(train_data.iloc[i]["scraped_at"])
-                features.extend([
-                    timestamp.hour,
-                    timestamp.minute % 10,  # Minute cycle pattern
-                    timestamp.hour % 6,     # 6-hour cycle
-                ])
-            except:
-                features.extend([12, 0, 0])  # Default
-            
-            # Multi-window color frequencies (10, 20, 50 rounds)
-            for window in [10, 20, 50]:
+                features.extend([timestamp.hour, timestamp.minute, timestamp.weekday()])
+            except Exception:
+                features.extend([12, 0, 0])
+
+            # Historical color features (1, 2, 3 rounds ago)
+            for lag in [1, 2, 3]:
+                if i - lag >= 0:
+                    color = train_data.iloc[i - lag]["color"]
+                    features.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0))
+                else:
+                    features.append(0)
+
+            # Frequency features (last 10, 30, 50)
+            for window in [10, 30, 50]:
                 if i >= window:
-                    window_data = train_data.iloc[i-window:i]
+                    window_data = train_data.iloc[i - window:i]
                     red_freq = (window_data["color"] == "RED").sum() / window
                     green_freq = (window_data["color"] == "GREEN").sum() / window
                     violet_freq = (window_data["color"] == "VIOLET").sum() / window
                     features.extend([red_freq, green_freq, violet_freq])
                 else:
                     features.extend([0.33, 0.33, 0.34])
-            
-            # Enhanced streak features
-            if i >= 10:
-                recent_colors = train_data.iloc[i-10:i]["color"].tolist()
-                current_color = recent_colors[-1]
-                
-                # Current color streak
+
+            # Current streak based on previous color
+            if i - 1 >= 0:
+                current_color = train_data.iloc[i - 1]["color"]
                 streak = 1
-                for j in range(len(recent_colors)-2, -1, -1):
-                    if recent_colors[j] == current_color:
+                for j in range(i - 2, max(0, i - 10), -1):
+                    if train_data.iloc[j]["color"] == current_color:
                         streak += 1
                     else:
                         break
-                features.append(min(streak, 8))  # Increased cap
-                
-                # Alternating pattern detection
-                alternations = 0
-                for j in range(1, len(recent_colors)):
-                    if recent_colors[j] != recent_colors[j-1]:
-                        alternations += 1
-                features.append(alternations)
-                
-                # Color switching frequency
-                switches = sum(1 for j in range(1, len(recent_colors)) 
-                              if recent_colors[j] != recent_colors[j-1])
-                features.append(switches)
+                features.append(min(streak, 10))
             else:
-                features.extend([1, 0, 0])
-            
-            # Number-based features
+                features.append(1)
+
+            # Number patterns (last 20)
             if i >= 20:
-                recent_numbers = train_data.iloc[i-20:i]["number"].tolist()
-                # Sum patterns
-                recent_sum = sum(recent_numbers) % 10
-                features.append(recent_sum)
-                
-                # Even/odd balance
-                even_count = sum(1 for n in recent_numbers if n % 2 == 0)
-                features.append(even_count / len(recent_numbers))
-                
-                # High/low balance (5-9 vs 0-4)
-                high_count = sum(1 for n in recent_numbers if n >= 5)
-                features.append(high_count / len(recent_numbers))
+                recent_numbers = train_data.iloc[i - 20:i]["number"].astype(int).tolist()
+                for num in range(10):
+                    features.append(recent_numbers.count(num) / 20)
+                features.append(max(recent_numbers))
+                features.append(min(recent_numbers))
+                features.append(float(np.mean(recent_numbers)))
+                features.append(float(np.std(recent_numbers)))
             else:
-                features.extend([0, 0.5, 0.5])
-            
-            # Volatility feature
-            if i >= 15:
-                recent_colors_vol = train_data.iloc[i-15:i]["color"].tolist()
-                color_switches = sum(1 for j in range(1, len(recent_colors_vol)) 
-                                   if recent_colors_vol[j] != recent_colors_vol[j-1])
-                volatility = color_switches / (len(recent_colors_vol) - 1)
-                features.append(volatility)
+                features.extend([0.1] * 10)
+                features.extend([5, 0, 5, 0])
+
+            # Number volatility std over last 15 and 45
+            for vol_window in [15, 45]:
+                if i >= vol_window:
+                    nums_win = train_data.iloc[i - vol_window:i]["number"].astype(int).values
+                    features.append(float(np.std(nums_win)))
+                else:
+                    features.append(0.0)
+
+            # Time since last VIOLET
+            lookback_slice = train_data.iloc[:i]
+            last_violet_idx = None
+            if len(lookback_slice) > 0:
+                violet_positions = np.where(lookback_slice["color"].values == "VIOLET")[0]
+                if violet_positions.size > 0:
+                    last_violet_idx = int(violet_positions[-1])
+            if last_violet_idx is not None:
+                features.append(float(i - last_violet_idx))
             else:
+                features.append(float(min(i, 100)))
+
+            # Markov BIG probability from analyze_big_small
+            try:
+                if i >= 20:
+                    temp_df = train_data.iloc[max(0, i - 60):i][["number", "color"]].copy()
+                    temp_df["number"] = temp_df["number"].astype(int)
+                    size_probs, _, _ = analyze_big_small(temp_df, lookback=min(60, len(temp_df)))
+                    features.append(float(size_probs.get("BIG", 0.5)))
+                else:
+                    features.append(0.5)
+            except Exception:
                 features.append(0.5)
-            
-            # Add features to list
-            features_list.append(features)
-            
-            # Target (next round color)
+
+            # Lag numbers 1 and 2
+            for lag in [1, 2]:
+                if i - lag >= 0:
+                    try:
+                        features.append(int(train_data.iloc[i - lag]["number"]))
+                    except Exception:
+                        features.append(0)
+                else:
+                    features.append(0)
+
+            # Target
             target_color = train_data.iloc[i]["color"]
-            target_encoded = {"RED": 0, "GREEN": 1, "VIOLET": 2}.get(target_color, 0)
-            targets.append(target_encoded)
-        
-        if len(features_list) < 100:  # Increased minimum for better training
-            print("Warning: Not enough training samples for ML model, using momentum fallback")
-            return analyze_momentum_fallback(df)
-        
-        # Convert to numpy arrays
+            targets.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(target_color, 0))
+            features_list.append(features)
+
+        if len(features_list) < 100:
+            print("⚠️  Not enough training samples for ML model")
+            return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+
         X = np.array(features_list)
         y = np.array(targets)
-        
-        # Use cross-validation for better validation
-        from sklearn.ensemble import RandomForestClassifier
-        from sklearn.model_selection import cross_val_score
-        
-        # Enhanced RandomForest with better parameters
-        rf_model = RandomForestClassifier(
-            n_estimators=150,  # More trees for better ensemble
-            max_depth=6,       # Deeper trees for complex patterns
-            min_samples_split=10,  # Prevent overfitting
-            min_samples_leaf=5,    # Prevent overfitting
-            random_state=42,
-            class_weight='balanced',
-            max_features='sqrt'  # Feature sampling for diversity
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
         )
-        
-        # Cross-validation score
-        cv_scores = cross_val_score(rf_model, X, y, cv=3, scoring='accuracy')
-        avg_cv_score = cv_scores.mean()
-        
-        print(f"ML Cross-Validation Accuracy: {avg_cv_score:.3f} (+/-{cv_scores.std():.3f})")
-        
-        # If CV accuracy is too low, fallback to momentum
-        if avg_cv_score < 0.35:  # Lowered back for signal generation
-            print("Warning: ML accuracy too low, using momentum fallback")
-            return analyze_momentum_fallback(df)
-        
-        # Train final model on all data
-        rf_model.fit(X, y)
-        
-        # Prepare current features
+
+        model = LGBMClassifier(
+            n_estimators=200,
+            max_depth=6,
+            learning_rate=0.07,
+            random_state=42,
+            verbose=-1,
+            class_weight='balanced',
+            subsample=0.8,
+            colsample_bytree=0.8
+        )
+        model.fit(X_train, y_train)
+
+        y_pred = model.predict(X_val)
+        accuracy = accuracy_score(y_val, y_pred)
+        print(f"🤖 ML Model Accuracy: {accuracy:.3f}")
+
+        # Build current features for prediction
         current_features = []
-        
-        # Current hour
         try:
             current_time = datetime.utcnow()
-            current_features.append(current_time.hour)
-        except:
-            current_features.append(12)
-        
-        # Current color frequencies (multi-window)
-        for window in [10, 20, 50]:
+            current_features.extend([current_time.hour, current_time.minute, current_time.weekday()])
+        except Exception:
+            current_features.extend([12, 0, 0])
+
+        for lag in [1, 2, 3]:
+            if len(df) >= lag:
+                color = df.iloc[-lag]["color"]
+                current_features.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0))
+            else:
+                current_features.append(0)
+
+        for window in [10, 30, 50]:
             if len(df) >= window:
                 window_data = df.tail(window)
                 red_freq = (window_data["color"] == "RED").sum() / window
@@ -751,110 +756,77 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
                 current_features.extend([red_freq, green_freq, violet_freq])
             else:
                 current_features.extend([0.33, 0.33, 0.34])
-        
-        # Enhanced current features
-        if len(df) >= 10:
-            recent_colors = df.tail(10)["color"].tolist()
-            current_color = recent_colors[-1]
-            
-            # Current streak
+
+        if len(df) >= 2:
+            current_color = df.iloc[-1]["color"]
             streak = 1
-            for i in range(len(recent_colors)-2, -1, -1):
-                if recent_colors[i] == current_color:
+            for k in range(len(df) - 2, max(0, len(df) - 10), -1):
+                if df.iloc[k]["color"] == current_color:
                     streak += 1
                 else:
                     break
-            current_features.append(min(streak, 8))
-            
-            # Alternations and switches
-            alternations = sum(1 for i in range(1, len(recent_colors)) 
-                             if recent_colors[i] != recent_colors[i-1])
-            current_features.extend([alternations, alternations])
+            current_features.append(min(streak, 10))
         else:
-            current_features.extend([1, 0, 0])
-        
-        # Current number patterns
-        if len(df) >= 20:
-            recent_numbers = df.tail(20)["number"].tolist()
-            recent_sum = sum(recent_numbers) % 10
-            even_ratio = sum(1 for n in recent_numbers if n % 2 == 0) / len(recent_numbers)
-            high_ratio = sum(1 for n in recent_numbers if n >= 5) / len(recent_numbers)
-            current_features.extend([recent_sum, even_ratio, high_ratio])
-        else:
-            current_features.extend([0, 0.5, 0.5])
-        
-        # Current volatility
-        if len(df) >= 15:
-            recent_colors_vol = df.tail(15)["color"].tolist()
-            volatility = sum(1 for i in range(1, len(recent_colors_vol)) 
-                           if recent_colors_vol[i] != recent_colors_vol[i-1]) / (len(recent_colors_vol) - 1)
-            current_features.append(volatility)
-        else:
-            current_features.append(0.5)
-        
-        # Make prediction
-        X_current = np.array([current_features])
-        probabilities = rf_model.predict_proba(X_current)[0]
-        
-        # Map probabilities back to colors
-        color_probs = {
-            "RED": probabilities[0],
-            "GREEN": probabilities[1], 
-            "VIOLET": probabilities[2]
-        }
-        
-        print(f"ML Prediction: RED={color_probs['RED']:.3f}, GREEN={color_probs['GREEN']:.3f}, VIOLET={color_probs['VIOLET']:.3f}")
-        
-        return color_probs
-        
-    except Exception as e:
-        print(f"Warning: ML model failed: {e}, using momentum fallback")
-        return analyze_momentum_fallback(df)
+            current_features.append(1)
 
-def analyze_momentum_fallback(df: pd.DataFrame) -> Dict[str, float]:
-    """
-    Fallback strategy using momentum analysis when ML fails.
-    """
-    print("🔄 Using momentum fallback strategy")
-    if len(df) < 50:
+        if len(df) >= 20:
+            recent_numbers = df.tail(20)["number"].astype(int).tolist()
+            for num in range(10):
+                current_features.append(recent_numbers.count(num) / 20)
+            current_features.append(max(recent_numbers))
+            current_features.append(min(recent_numbers))
+            current_features.append(float(np.mean(recent_numbers)))
+            current_features.append(float(np.std(recent_numbers)))
+        else:
+            current_features.extend([0.1] * 10)
+            current_features.extend([5, 0, 5, 0])
+
+        for vol_window in [15, 45]:
+            if len(df) >= vol_window:
+                nums_win = df.tail(vol_window)["number"].astype(int).values
+                current_features.append(float(np.std(nums_win)))
+            else:
+                current_features.append(0.0)
+
+        last_violet_pos = None
+        if len(df) > 0:
+            violet_positions = np.where(df["color"].values == "VIOLET")[0]
+            if violet_positions.size > 0:
+                last_violet_pos = int(violet_positions[-1])
+        if last_violet_pos is not None:
+            current_features.append(float(len(df) - 1 - last_violet_pos))
+        else:
+            current_features.append(float(min(len(df), 100)))
+
+        try:
+            temp_df = df.tail(min(60, len(df)))[["number", "color"]].copy()
+            if len(temp_df) >= 20:
+                temp_df["number"] = temp_df["number"].astype(int)
+                size_probs, _, _ = analyze_big_small(temp_df, lookback=min(60, len(temp_df)))
+                current_features.append(float(size_probs.get("BIG", 0.5)))
+            else:
+                current_features.append(0.5)
+        except Exception:
+            current_features.append(0.5)
+
+        for lag in [1, 2]:
+            if len(df) >= lag:
+                try:
+                    current_features.append(int(df.iloc[-lag]["number"]))
+                except Exception:
+                    current_features.append(0)
+            else:
+                current_features.append(0)
+
+        X_current = np.array([current_features])
+        probabilities = model.predict_proba(X_current)[0]
+        color_probs = {"RED": probabilities[0], "GREEN": probabilities[1], "VIOLET": probabilities[2]}
+        print(f"🤖 ML Prediction: R={color_probs['RED']:.3f}, G={color_probs['GREEN']:.3f}, V={color_probs['VIOLET']:.3f}")
+        return color_probs
+
+    except Exception as e:
+        print(f"❌ ML Model Error: {e}")
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-    
-    # Use last 50 rounds for momentum
-    recent = df.tail(50)
-    
-    # Color frequencies
-    red_count = (recent["color"] == "RED").sum()
-    green_count = (recent["color"] == "GREEN").sum()
-    violet_count = (recent["color"] == "VIOLET").sum()
-    
-    total = len(recent)
-    red_prob = red_count / total
-    green_prob = green_count / total
-    violet_prob = violet_count / total
-    
-    # Add small momentum bias
-    if len(df) >= 10:
-        last_10 = df.tail(10)
-        recent_red = (last_10["color"] == "RED").sum() / 10
-        recent_green = (last_10["color"] == "GREEN").sum() / 10
-        recent_violet = (last_10["color"] == "VIOLET").sum() / 10
-        
-        # Blend 70% long-term + 30% recent
-        red_prob = 0.7 * red_prob + 0.3 * recent_red
-        green_prob = 0.7 * green_prob + 0.3 * recent_green
-        violet_prob = 0.7 * violet_prob + 0.3 * recent_violet
-    
-    # Normalize
-    total_prob = red_prob + green_prob + violet_prob
-    color_probs = {
-        "RED": red_prob / total_prob,
-        "GREEN": green_prob / total_prob,
-        "VIOLET": violet_prob / total_prob
-    }
-    
-    print(f"Momentum Fallback: RED={color_probs['RED']:.3f}, GREEN={color_probs['GREEN']:.3f}, VIOLET={color_probs['VIOLET']:.3f}")
-    
-    return color_probs
 
 def analyze_prediction_performance(df: pd.DataFrame, lookback: int = 100) -> Dict[str, float]:
     """
@@ -1011,8 +983,8 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
         return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
 
 def detect_strong_signals(df: pd.DataFrame, 
-                         ml_threshold: float = 0.52,  # Further lowered for signal generation
-                         size_threshold: float = 0.68,  # Lowered for more signals
+                         ml_threshold: float = 0.70,
+                         size_threshold: float = 0.70,
                          conn_str: str = None) -> List[Dict]:
     """Detect strong signals using Machine Learning model with enhanced filtering"""
     signals = []
@@ -1025,57 +997,31 @@ def detect_strong_signals(df: pd.DataFrame,
         return []
     
     # 1. Machine Learning Analysis (Primary Method)
-    print("Running Machine Learning analysis...")
+    print("🤖 Running Machine Learning analysis...")
     ml_probs = analyze_with_ml_model(df, min_data_points=200)
     max_ml_confidence = max(ml_probs.values())
-    print(f"ML analysis: max={max_ml_confidence:.3f} (threshold: {ml_threshold:.3f})")
+    print(f"🤖 ML analysis: max={max_ml_confidence:.3f} (threshold: {ml_threshold:.3f})")
     
-    # 2. Traditional Momentum Analysis (Backup Method)
-    print("Running Momentum analysis...")
-    momentum_probs = analyze_momentum_fallback(df)
-    max_momentum_confidence = max(momentum_probs.values())
-    print(f"Momentum analysis: max={max_momentum_confidence:.3f}")
+    # Lower threshold for ML signals to generate more alerts
+    ml_alert_threshold = max(0.55, ml_threshold - 0.10)  # 10% lower than preset threshold
     
-    # 3. Hybrid Ensemble (Combine ML + Momentum intelligently)
-    hybrid_probs = {}
-    for color in ["RED", "GREEN", "VIOLET"]:
-        # Weight ML more heavily if it's confident, otherwise rely on momentum
-        if max_ml_confidence >= 0.6:
-            ml_weight = 0.7
-            momentum_weight = 0.3
-        else:
-            ml_weight = 0.3
-            momentum_weight = 0.7
-        
-        hybrid_probs[color] = (ml_weight * ml_probs[color] + momentum_weight * momentum_probs[color])
-    
-    max_hybrid_confidence = max(hybrid_probs.values())
-    print(f"Hybrid ensemble: max={max_hybrid_confidence:.3f}")
-    
-    # Use hybrid probabilities for alerts (more robust than ML alone)
-    ml_alert_threshold = max(0.48, ml_threshold - 0.08)  # Larger reduction for more signals
-    
-    print(f"🎯 ML alert threshold: {ml_alert_threshold:.3f}, Max confidence: {max_hybrid_confidence:.3f}")
-    
-    if max_hybrid_confidence >= ml_alert_threshold:
-        best_color = max(hybrid_probs, key=hybrid_probs.get)
+    if max_ml_confidence >= ml_alert_threshold:
+        best_color = max(ml_probs, key=ml_probs.get)
         signals.append({
             "type": "color",
             "color": best_color,
-            "confidence": max_hybrid_confidence,
-            "method": "HybridML",
-            "reason": f"Hybrid ML+Momentum predicts {best_color} with {max_hybrid_confidence:.3f} confidence",
-            "probs": hybrid_probs
+            "confidence": max_ml_confidence,
+            "method": "MachineLearning",
+            "reason": f"ML model predicts {best_color} with {max_ml_confidence:.3f} confidence",
+            "probs": ml_probs
         })
     
     # 2. Big/Small Analysis (Keep this as it's complementary to color prediction)
     size_probs, size_conf, size_reason = analyze_big_small(df)
     print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
     
-    # Balanced threshold for size signals
-    size_alert_threshold = max(0.62, size_threshold - 0.06)  # Larger reduction for more signals
-    
-    print(f"⚖️  Size alert threshold: {size_alert_threshold:.3f}, Confidence: {size_conf:.3f}")
+    # Lower threshold for size signals to generate more alerts
+    size_alert_threshold = max(0.60, size_threshold - 0.10)  # 10% lower than preset threshold
     
     if size_conf >= size_alert_threshold:
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
@@ -1119,27 +1065,6 @@ def detect_strong_signals(df: pd.DataFrame,
             print(f"  Signal {i+1}: {signal['method']} - {signal['color']} + {signal['size']} @ {signal['confidence']:.3f}")
     
     return signals
-
-def get_adaptive_thresholds(df: pd.DataFrame, base_threshold: float = 0.65) -> float:
-    """
-    Dynamically adjust thresholds based on recent performance.
-    """
-    performance = analyze_prediction_performance(df, lookback=100)
-    
-    # Adjust threshold based on performance
-    if performance["overall"] < 0.35:  # Very poor performance
-        adjusted_threshold = base_threshold + 0.15  # Higher threshold = more selective
-    elif performance["overall"] < 0.40:  # Poor performance
-        adjusted_threshold = base_threshold + 0.10
-    elif performance["overall"] < 0.45:  # Below average
-        adjusted_threshold = base_threshold + 0.05
-    elif performance["overall"] > 0.55:  # Good performance
-        adjusted_threshold = base_threshold - 0.05  # Lower threshold = more signals
-    else:
-        adjusted_threshold = base_threshold
-    
-    print(f"Adaptive threshold: {adjusted_threshold:.3f} (base: {base_threshold:.3f})")
-    return adjusted_threshold
 
 def format_color_alert(signal: dict, betting_period: str, accuracy: float) -> str:
     """Format a color betting alert message"""
@@ -1397,11 +1322,9 @@ def main():
             else:
                 best_signal = top
             
-            # Only alert if: Ensemble OR moderate single-method (>=0.50)
+            # Only alert if: Ensemble OR exceptionally strong single-method (>=0.72)
             is_ensemble = (best_signal.get("method") == "Ensemble")
-            exceptionally_strong = (best_signal["confidence"] >= 0.50)  # Further lowered for signal generation
-            
-            print(f"🔍 Alert gate check: Ensemble={is_ensemble}, Strong={exceptionally_strong} (conf: {best_signal['confidence']:.3f})")
+            exceptionally_strong = (best_signal["confidence"] >= 0.72)
             if is_ensemble or exceptionally_strong:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 initial_period = get_next_betting_period(df)
@@ -1457,10 +1380,10 @@ def main():
                     print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < {args.eta_min_seconds}s)")
                     return
                 
-                # Quality gate 2: Backtest precision check (very relaxed)
+                # Quality gate 2: Backtest precision check
                 backtest_precision = backtest_ml_system(df, lookback=300)
-                if backtest_precision < 0.52:  # Much lower threshold for signal generation
-                    print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.52)")
+                if backtest_precision < 0.62:
+                    print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.62)")
                     return
                 
                 # Quality gate 3: Violet share check (avoid periods with too much violet)
@@ -1514,32 +1437,18 @@ def main():
                         anchor_pid = str(df["period_id"].iloc[-1])
                         if best_signal["type"] == "color":
                             log_alert_to_neon(
-                cfg.neon_conn_str,
-                anchor_pid,
+                                cfg.neon_conn_str,
+                                anchor_pid,
                                 best_signal["color"],
-                                None,  # No number prediction in new system
+                                None,
                                 best_signal["probs"],
                                 [best_signal["method"]],
                                 best_signal["confidence"],
                                 accuracy,
-                                None,  # No cycle length
-                                0.0,   # No cycle accuracy
+                                None,
+                                0.0,
                             )
-                        elif best_signal["type"] == "size":
-                            size_conf = best_signal["confidence"]
-                            if size_conf >= 0.70:  
-                                log_alert_to_neon(
-                                    cfg.neon_conn_str,
-                                    anchor_pid,
-                                    None,  # No color prediction
-                                    best_signal["size"],
-                                    best_signal["probs"],
-                                    [best_signal["method"]],
-                                    size_conf,
-                                    accuracy,
-                                    None,  # No cycle length
-                                    0.0,   # No cycle accuracy
-                                )
+                        # Note: Size predictions not logged to database for now
                     except Exception as e:
                         print(f"Failed to log to database: {e}")
             else:
