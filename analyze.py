@@ -785,8 +785,7 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
             min_child_weight=0.001,  # Additional regularization
             feature_fraction=0.8,  # Random feature selection
             bagging_fraction=0.8,  # Random sample selection
-            bagging_freq=1,  # Apply bagging every iteration
-            early_stopping_rounds=50  # Stop early if no improvement
+            bagging_freq=1  # Apply bagging every iteration
         )
         # Train multiple models for ensemble (reduces overfitting)
         from sklearn.ensemble import VotingClassifier
