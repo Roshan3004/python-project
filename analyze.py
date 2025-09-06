@@ -600,9 +600,14 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
         features_list = []
         targets = []
 
-        train_data = df.tail(min(800, len(df))).copy()
-        max_samples = min(300, len(train_data) - 50)
-        start_idx = max(50, len(train_data) - max_samples - 50)
+        # Use more data for better generalization - up to 2000 rounds
+        train_data = df.tail(min(2000, len(df))).copy()
+        
+        # Increase training samples significantly for better generalization
+        max_samples = min(800, len(train_data) - 100)  # Increased from 300 to 800
+        start_idx = max(100, len(train_data) - max_samples - 100)  # More buffer
+        
+        print(f"📊 Training data: {len(train_data)} total rounds, using {max_samples} samples")
 
         for i in range(start_idx, len(train_data)):
             features = []
@@ -712,25 +717,112 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
 
         X = np.array(features_list)
         y = np.array(targets)
+        
+        # Use stratified K-fold for better validation
+        from sklearn.model_selection import StratifiedKFold
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        
+        # For now, use simple train/val split but with more data
         X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
+            X, y, test_size=0.15, random_state=42, stratify=y  # Reduced test size to 15%
         )
+        
+        print(f"📊 Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
 
+        # Feature selection to reduce noise and overfitting
+        from sklearn.feature_selection import SelectKBest, f_classif
+        from sklearn.preprocessing import StandardScaler
+        
+        # Scale features for better feature selection
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_val_scaled = scaler.transform(X_val)
+        
+        # Select top 80% of features based on F-score
+        n_features = max(20, int(X_train_scaled.shape[1] * 0.8))
+        selector = SelectKBest(score_func=f_classif, k=n_features)
+        X_train_selected = selector.fit_transform(X_train_scaled, y_train)
+        X_val_selected = selector.transform(X_val_scaled)
+        
+        print(f"🔍 Feature selection: {X_train_scaled.shape[1]} -> {X_train_selected.shape[1]} features")
+        
+        # Update X for training
+        X_train = X_train_selected
+        X_val = X_val_selected
+
+        # Adaptive model parameters based on data stability
+        regime_analysis = detect_market_regime_change(df, lookback=100)
+        
+        if regime_analysis["regime_change"]:
+            # More conservative model for unstable periods
+            n_estimators = 200
+            learning_rate = 0.05
+            max_depth = 4
+            reg_alpha = 0.1
+            reg_lambda = 0.1
+            print("🔧 Using conservative model parameters due to regime change")
+        else:
+            # Standard parameters for stable periods with regularization
+            n_estimators = 300
+            learning_rate = 0.06
+            max_depth = 5
+            reg_alpha = 0.05
+            reg_lambda = 0.05
+            print("🔧 Using standard model parameters with regularization")
+        
         model = LGBMClassifier(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.07,
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            reg_alpha=reg_alpha,  # L1 regularization
+            reg_lambda=reg_lambda,  # L2 regularization
             random_state=42,
             verbose=-1,
             class_weight='balanced',
-            subsample=0.8,
-            colsample_bytree=0.8
+            subsample=0.7,  # More aggressive subsampling
+            colsample_bytree=0.7,  # More aggressive feature sampling
+            min_child_samples=20,  # Prevent overfitting on small samples
+            min_child_weight=0.001,  # Additional regularization
+            feature_fraction=0.8,  # Random feature selection
+            bagging_fraction=0.8,  # Random sample selection
+            bagging_freq=1,  # Apply bagging every iteration
+            early_stopping_rounds=50,  # Stop early if no improvement
+            random_state=42
         )
-        model.fit(X_train, y_train)
+        # Train multiple models for ensemble (reduces overfitting)
+        from sklearn.ensemble import VotingClassifier
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.ensemble import RandomForestClassifier
+        
+        # Create ensemble of different models
+        lgb_model = model
+        rf_model = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=4,
+            random_state=42,
+            class_weight='balanced'
+        )
+        lr_model = LogisticRegression(
+            random_state=42,
+            class_weight='balanced',
+            max_iter=1000
+        )
+        
+        # Ensemble voting
+        ensemble = VotingClassifier([
+            ('lgb', lgb_model),
+            ('rf', rf_model),
+            ('lr', lr_model)
+        ], voting='soft')
+        
+        ensemble.fit(X_train, y_train)
 
-        y_pred = model.predict(X_val)
+        y_pred = ensemble.predict(X_val)
         accuracy = accuracy_score(y_val, y_pred)
-        print(f"🤖 ML Model Accuracy: {accuracy:.3f}")
+        print(f"🤖 Ensemble Model Accuracy: {accuracy:.3f}")
+        
+        # Use ensemble for prediction
+        model = ensemble
 
         # Build current features for prediction
         current_features = []
@@ -818,8 +910,13 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
             else:
                 current_features.append(0)
 
+        # Apply same feature selection and scaling to current features
         X_current = np.array([current_features])
-        probabilities = model.predict_proba(X_current)[0]
+        X_current_scaled = scaler.transform(X_current)
+        X_current_selected = selector.transform(X_current_scaled)
+        
+        # Predict
+        probabilities = model.predict_proba(X_current_selected)[0]
         color_probs = {"RED": probabilities[0], "GREEN": probabilities[1], "VIOLET": probabilities[2]}
         print(f"🤖 ML Prediction: R={color_probs['RED']:.3f}, G={color_probs['GREEN']:.3f}, V={color_probs['VIOLET']:.3f}")
         return color_probs
@@ -896,6 +993,86 @@ def get_adaptive_thresholds(df: pd.DataFrame, base_threshold: float = 0.65) -> f
     
     print(f"🎯 Adaptive threshold: {adjusted_threshold:.3f} (base: {base_threshold:.3f})")
     return adjusted_threshold
+
+def is_sleep_time() -> bool:
+    """
+    Check if current time is within sleep hours (1AM-9AM IST).
+    Returns True if we should sleep (skip analysis).
+    """
+    try:
+        # Get current time in IST
+        ist = timezone(timedelta(hours=5, minutes=30))  # IST is UTC+5:30
+        current_time = datetime.now(ist)
+        current_hour = current_time.hour
+        
+        # Sleep time: 1AM to 9AM IST (1-8 inclusive)
+        is_sleep = 1 <= current_hour <= 8
+        
+        if is_sleep:
+            print(f"😴 Sleep time detected: {current_time.strftime('%H:%M:%S')} IST (1AM-9AM)")
+            print("⏸️  Skipping analysis during sleep hours")
+        else:
+            print(f"🌅 Awake time: {current_time.strftime('%H:%M:%S')} IST")
+            
+        return is_sleep
+        
+    except Exception as e:
+        print(f"⚠️  Error checking sleep time: {e}")
+        return False  # If error, don't sleep
+
+def detect_market_regime_change(df: pd.DataFrame, lookback: int = 200) -> Dict[str, float]:
+    """
+    Detect if market patterns have changed significantly.
+    Returns regime stability metrics.
+    """
+    if len(df) < lookback:
+        return {"stability": 1.0, "regime_change": False, "confidence_penalty": 0.0}
+    
+    recent = df.tail(lookback)
+    
+    # 1. Color distribution stability
+    recent_colors = recent["color"].value_counts(normalize=True)
+    expected_dist = {"RED": 0.4, "GREEN": 0.4, "VIOLET": 0.2}
+    
+    color_stability = 1.0
+    for color, expected in expected_dist.items():
+        actual = recent_colors.get(color, 0)
+        color_stability -= abs(actual - expected) * 0.5
+    
+    # 2. Number volatility stability
+    recent_numbers = recent["number"].astype(int)
+    current_volatility = recent_numbers.std()
+    historical_volatility = df.tail(lookback * 2).head(lookback)["number"].astype(int).std()
+    
+    volatility_stability = 1.0 - min(1.0, abs(current_volatility - historical_volatility) / max(historical_volatility, 1.0))
+    
+    # 3. Pattern consistency (streak analysis)
+    colors = recent["color"].tolist()
+    streak_changes = sum(1 for i in range(1, len(colors)) if colors[i] != colors[i-1])
+    expected_changes = len(colors) * 0.6  # Expected ~60% color changes
+    streak_stability = 1.0 - min(1.0, abs(streak_changes - expected_changes) / expected_changes)
+    
+    # Overall stability
+    overall_stability = (color_stability + volatility_stability + streak_stability) / 3
+    
+    # Determine if regime change occurred
+    regime_change = overall_stability < 0.7
+    
+    # Confidence penalty for unstable periods
+    confidence_penalty = max(0.0, 0.15 - overall_stability * 0.2)
+    
+    print(f"🔍 Market Regime Analysis:")
+    print(f"   Color Stability: {color_stability:.3f}")
+    print(f"   Volatility Stability: {volatility_stability:.3f}")
+    print(f"   Streak Stability: {streak_stability:.3f}")
+    print(f"   Overall Stability: {overall_stability:.3f}")
+    print(f"   Regime Change: {'YES' if regime_change else 'NO'}")
+    
+    return {
+        "stability": overall_stability,
+        "regime_change": regime_change,
+        "confidence_penalty": confidence_penalty
+    }
 
 # ====== LEGACY MOMENTUM-BASED ANALYSIS SYSTEM (DEPRECATED) ======
 
@@ -995,6 +1172,14 @@ def detect_strong_signals(df: pd.DataFrame,
     if volatility > 0.90:  # Skip during extreme volatile periods
         print("⚠️  Skipping due to extreme volatility")
         return []
+    
+    # Market regime analysis
+    regime_analysis = detect_market_regime_change(df)
+    if regime_analysis["regime_change"]:
+        print("⚠️  Market regime change detected - applying confidence penalty")
+        ml_threshold += regime_analysis["confidence_penalty"]
+        size_threshold += regime_analysis["confidence_penalty"]
+        print(f"🎯 Adjusted thresholds: ML={ml_threshold:.3f}, Size={size_threshold:.3f}")
     
     # 1. Machine Learning Analysis (Primary Method)
     print("🤖 Running Machine Learning analysis...")
@@ -1181,10 +1366,17 @@ def main():
     parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
     parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
     parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
+    parser.add_argument("--ignore_sleep", action="store_true", help="Ignore sleep time and run anyway")
     # New: tunable alert gates so we can adjust without code edits
     parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
     parser.add_argument("--violet_max_share", type=float, default=0.26, help="Maximum allowed recent VIOLET share (0-1) for alert")
     args = parser.parse_args()
+    
+    # Check sleep time first (unless explicitly ignored)
+    if not args.ignore_sleep and is_sleep_time():
+        print("💤 Analysis skipped due to sleep time (1AM-9AM IST)")
+        print("💡 Use --ignore_sleep to force analysis during sleep hours")
+        return
     
     print("🚀 WinGo Momentum Analysis System")
     print("=" * 50)
