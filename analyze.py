@@ -989,6 +989,16 @@ def detect_strong_signals(df: pd.DataFrame,
     """Detect strong signals using Machine Learning model with enhanced filtering"""
     signals = []
     
+    # Pull optional gating knobs from env set by CLI layer (fallbacks)
+    try:
+        min_prob_margin = float(os.getenv("WINGO_MIN_PROB_MARGIN", "0.20"))
+    except Exception:
+        min_prob_margin = 0.20
+    try:
+        max_entropy = float(os.getenv("WINGO_MAX_ENTROPY", "0.85"))
+    except Exception:
+        max_entropy = 0.85
+    
     # Enhanced filtering: Check volatility
     volatility = detect_volatility(df)
     print(f"🌊 Volatility check: {volatility:.3f} (threshold: 0.75)")
@@ -1005,16 +1015,32 @@ def detect_strong_signals(df: pd.DataFrame,
     # Lower threshold for ML signals to generate more alerts
     ml_alert_threshold = max(0.60, ml_threshold - 0.05)  # tighter: allow at most -0.05
     
-    if max_ml_confidence >= ml_alert_threshold:
+    # Probability margin and entropy gates
+    def probs_entropy(p: Dict[str, float]) -> float:
+        arr = np.array([p.get("RED", 0.0), p.get("GREEN", 0.0), p.get("VIOLET", 0.0)])
+        arr = np.clip(arr, 1e-9, 1.0)
+        arr = arr / arr.sum()
+        return float(-np.sum(arr * np.log(arr)))
+    def top_margin(p: Dict[str, float]) -> float:
+        values = sorted(p.values(), reverse=True)
+        return float(values[0] - values[1]) if len(values) >= 2 else 0.0
+    
+    margin = top_margin(ml_probs)
+    entropy = probs_entropy(ml_probs)
+    print(f"🔒 Prob margin={margin:.3f} (min {min_prob_margin:.2f}), entropy={entropy:.3f} (max {max_entropy:.2f})")
+    
+    if (max_ml_confidence >= ml_alert_threshold) and (margin >= min_prob_margin) and (entropy <= max_entropy):
         best_color = max(ml_probs, key=ml_probs.get)
         signals.append({
             "type": "color",
             "color": best_color,
             "confidence": max_ml_confidence,
             "method": "MachineLearning",
-            "reason": f"ML model predicts {best_color} with {max_ml_confidence:.3f} confidence",
+            "reason": f"ML model predicts {best_color} with {max_ml_confidence:.3f} confidence (margin={margin:.3f}, H={entropy:.3f})",
             "probs": ml_probs
         })
+    else:
+        print("❌ ML signal failed margin/entropy/threshold gates")
     
     # 2. Big/Small Analysis (Keep this as it's complementary to color prediction)
     size_probs, size_conf, size_reason = analyze_big_small(df)
@@ -1182,6 +1208,9 @@ def main():
     parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
     parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
     parser.add_argument("--disable_sleep_window", action="store_true", help="Ignore 1:00–9:00 IST quiet hours")
+    parser.add_argument("--min_prob_margin", type=float, default=0.20, help="Require top1-top2 prob margin before alert")
+    parser.add_argument("--max_entropy", type=float, default=0.85, help="Max allowed entropy of probs for alert (lower = stricter)")
+    parser.add_argument("--enable_recent_penalty", action="store_true", help="Penalize threshold if recent accuracy is low")
     # New: tunable alert gates so we can adjust without code edits
     parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
     parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
@@ -1256,14 +1285,38 @@ def main():
             if not preset_config:
                 print(f"❌ Invalid preset: {args.preset}")
                 return
-            signals = detect_strong_signals(df, 
-                                            ml_threshold=preset_config["momentum"],
+            base_ml_threshold = preset_config["momentum"]
+            if args.enable_recent_penalty:
+                rp = analyze_recent_performance(cfg.neon_conn_str)
+                penalty = rp.get("confidence_penalty", 0.0)
+                base_ml_threshold = min(0.90, base_ml_threshold + penalty)
+                print(f"📉 Recent penalty applied: +{penalty:.3f} → ML threshold {base_ml_threshold:.3f}")
+            # Export gating knobs so detect_strong_signals can read them without refactoring signature
+            try:
+                os.environ["WINGO_MIN_PROB_MARGIN"] = str(args.min_prob_margin)
+                os.environ["WINGO_MAX_ENTROPY"] = str(args.max_entropy)
+            except Exception:
+                pass
+            signals = detect_strong_signals(df,
+                                            ml_threshold=base_ml_threshold,
                                             size_threshold=0.70,
                                             conn_str=cfg.neon_conn_str)
         else:
             # Use default threshold
-            signals = detect_strong_signals(df, 
-                                            ml_threshold=args.color_prob_threshold,
+            base_ml_threshold = args.color_prob_threshold
+            if args.enable_recent_penalty:
+                rp = analyze_recent_performance(cfg.neon_conn_str)
+                penalty = rp.get("confidence_penalty", 0.0)
+                base_ml_threshold = min(0.90, base_ml_threshold + penalty)
+                print(f"📉 Recent penalty applied: +{penalty:.3f} → ML threshold {base_ml_threshold:.3f}")
+            # Export gating knobs so detect_strong_signals can read them without refactoring signature
+            try:
+                os.environ["WINGO_MIN_PROB_MARGIN"] = str(args.min_prob_margin)
+                os.environ["WINGO_MAX_ENTROPY"] = str(args.max_entropy)
+            except Exception:
+                pass
+            signals = detect_strong_signals(df,
+                                            ml_threshold=base_ml_threshold,
                                             size_threshold=0.70,
                                             conn_str=cfg.neon_conn_str)
     except Exception as e:
