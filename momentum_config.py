@@ -113,24 +113,24 @@ def get_preset_config(preset_name: str):
             "aggressive": False
         },
         "balanced": {
-            "momentum": 0.65,
-            "number_pattern": 0.65,
-            "time_pattern": 0.65,
-            "ensemble": 0.65,
+            "momentum": 0.60,
+            "number_pattern": 0.62,
+            "time_pattern": 0.64,
+            "ensemble": 0.66,
             "aggressive": True
         },
         "aggressive": {
-            "momentum": 0.60,
-            "number_pattern": 0.60,
-            "time_pattern": 0.60,
-            "ensemble": 0.60,
+            "momentum": 0.55,
+            "number_pattern": 0.57,
+            "time_pattern": 0.59,
+            "ensemble": 0.61,
             "aggressive": True
         },
         "very_aggressive": {
-            "momentum": 0.55,
-            "number_pattern": 0.55,
-            "time_pattern": 0.55,
-            "ensemble": 0.55,
+            "momentum": 0.52,
+            "number_pattern": 0.54,
+            "time_pattern": 0.56,
+            "ensemble": 0.58,
             "aggressive": True
         }
     }

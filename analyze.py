@@ -600,14 +600,9 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
         features_list = []
         targets = []
 
-        # Use more data for better generalization - up to 2000 rounds
-        train_data = df.tail(min(2000, len(df))).copy()
-        
-        # Increase training samples significantly for better generalization
-        max_samples = min(800, len(train_data) - 100)  # Increased from 300 to 800
-        start_idx = max(100, len(train_data) - max_samples - 100)  # More buffer
-        
-        print(f"📊 Training data: {len(train_data)} total rounds, using {max_samples} samples")
+        train_data = df.tail(min(800, len(df))).copy()
+        max_samples = min(300, len(train_data) - 50)
+        start_idx = max(50, len(train_data) - max_samples - 50)
 
         for i in range(start_idx, len(train_data)):
             features = []
@@ -717,110 +712,25 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
 
         X = np.array(features_list)
         y = np.array(targets)
-        
-        # Use stratified K-fold for better validation
-        from sklearn.model_selection import StratifiedKFold
-        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-        
-        # For now, use simple train/val split but with more data
         X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=0.15, random_state=42, stratify=y  # Reduced test size to 15%
+            X, y, test_size=0.2, random_state=42, stratify=y
         )
-        
-        print(f"📊 Training samples: {len(X_train)}, Validation samples: {len(X_val)}")
 
-        # Feature selection to reduce noise and overfitting
-        from sklearn.feature_selection import SelectKBest, f_classif
-        from sklearn.preprocessing import StandardScaler
-        
-        # Scale features for better feature selection
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_val_scaled = scaler.transform(X_val)
-        
-        # Select top 80% of features based on F-score
-        n_features = max(20, int(X_train_scaled.shape[1] * 0.8))
-        selector = SelectKBest(score_func=f_classif, k=n_features)
-        X_train_selected = selector.fit_transform(X_train_scaled, y_train)
-        X_val_selected = selector.transform(X_val_scaled)
-        
-        print(f"🔍 Feature selection: {X_train_scaled.shape[1]} -> {X_train_selected.shape[1]} features")
-        
-        # Update X for training
-        X_train = X_train_selected
-        X_val = X_val_selected
-
-        # Adaptive model parameters based on data stability
-        regime_analysis = detect_market_regime_change(df, lookback=100)
-        
-        if regime_analysis["regime_change"]:
-            # More conservative model for unstable periods
-            n_estimators = 200
-            learning_rate = 0.05
-            max_depth = 4
-            reg_alpha = 0.1
-            reg_lambda = 0.1
-            print("🔧 Using conservative model parameters due to regime change")
-        else:
-            # Standard parameters for stable periods with regularization
-            n_estimators = 300
-            learning_rate = 0.06
-            max_depth = 5
-            reg_alpha = 0.05
-            reg_lambda = 0.05
-            print("🔧 Using standard model parameters with regularization")
-        
         model = LGBMClassifier(
-            n_estimators=n_estimators,
-            max_depth=max_depth,
-            learning_rate=learning_rate,
-            reg_alpha=reg_alpha,  # L1 regularization
-            reg_lambda=reg_lambda,  # L2 regularization
+            n_estimators=200,
+            max_depth=6,
+            learning_rate=0.07,
             random_state=42,
             verbose=-1,
             class_weight='balanced',
-            subsample=0.7,  # More aggressive subsampling
-            colsample_bytree=0.7,  # More aggressive feature sampling
-            min_child_samples=20,  # Prevent overfitting on small samples
-            min_child_weight=0.001,  # Additional regularization
-            feature_fraction=0.8,  # Random feature selection
-            bagging_fraction=0.8,  # Random sample selection
-            bagging_freq=1  # Apply bagging every iteration
+            subsample=0.8,
+            colsample_bytree=0.8
         )
-        # Train multiple models for ensemble (reduces overfitting)
-        from sklearn.ensemble import VotingClassifier
-        from sklearn.linear_model import LogisticRegression
-        from sklearn.ensemble import RandomForestClassifier
-        
-        # Create ensemble of different models
-        lgb_model = model
-        rf_model = RandomForestClassifier(
-            n_estimators=100,
-            max_depth=4,
-            random_state=42,
-            class_weight='balanced'
-        )
-        lr_model = LogisticRegression(
-            random_state=42,
-            class_weight='balanced',
-            max_iter=1000
-        )
-        
-        # Ensemble voting
-        ensemble = VotingClassifier([
-            ('lgb', lgb_model),
-            ('rf', rf_model),
-            ('lr', lr_model)
-        ], voting='soft')
-        
-        ensemble.fit(X_train, y_train)
+        model.fit(X_train, y_train)
 
-        y_pred = ensemble.predict(X_val)
+        y_pred = model.predict(X_val)
         accuracy = accuracy_score(y_val, y_pred)
-        print(f"🤖 Ensemble Model Accuracy: {accuracy:.3f}")
-        
-        # Use ensemble for prediction
-        model = ensemble
+        print(f"🤖 ML Model Accuracy: {accuracy:.3f}")
 
         # Build current features for prediction
         current_features = []
@@ -908,13 +818,8 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
             else:
                 current_features.append(0)
 
-        # Apply same feature selection and scaling to current features
         X_current = np.array([current_features])
-        X_current_scaled = scaler.transform(X_current)
-        X_current_selected = selector.transform(X_current_scaled)
-        
-        # Predict
-        probabilities = model.predict_proba(X_current_selected)[0]
+        probabilities = model.predict_proba(X_current)[0]
         color_probs = {"RED": probabilities[0], "GREEN": probabilities[1], "VIOLET": probabilities[2]}
         print(f"🤖 ML Prediction: R={color_probs['RED']:.3f}, G={color_probs['GREEN']:.3f}, V={color_probs['VIOLET']:.3f}")
         return color_probs
@@ -991,86 +896,6 @@ def get_adaptive_thresholds(df: pd.DataFrame, base_threshold: float = 0.65) -> f
     
     print(f"🎯 Adaptive threshold: {adjusted_threshold:.3f} (base: {base_threshold:.3f})")
     return adjusted_threshold
-
-def is_sleep_time() -> bool:
-    """
-    Check if current time is within sleep hours (1AM-9AM IST).
-    Returns True if we should sleep (skip analysis).
-    """
-    try:
-        # Get current time in IST
-        ist = timezone(timedelta(hours=5, minutes=30))  # IST is UTC+5:30
-        current_time = datetime.now(ist)
-        current_hour = current_time.hour
-        
-        # Sleep time: 1AM to 9AM IST (1-8 inclusive)
-        is_sleep = 1 <= current_hour <= 8
-        
-        if is_sleep:
-            print(f"😴 Sleep time detected: {current_time.strftime('%H:%M:%S')} IST (1AM-9AM)")
-            print("⏸️  Skipping analysis during sleep hours")
-        else:
-            print(f"🌅 Awake time: {current_time.strftime('%H:%M:%S')} IST")
-            
-        return is_sleep
-        
-    except Exception as e:
-        print(f"⚠️  Error checking sleep time: {e}")
-        return False  # If error, don't sleep
-
-def detect_market_regime_change(df: pd.DataFrame, lookback: int = 200) -> Dict[str, float]:
-    """
-    Detect if market patterns have changed significantly.
-    Returns regime stability metrics.
-    """
-    if len(df) < lookback:
-        return {"stability": 1.0, "regime_change": False, "confidence_penalty": 0.0}
-    
-    recent = df.tail(lookback)
-    
-    # 1. Color distribution stability
-    recent_colors = recent["color"].value_counts(normalize=True)
-    expected_dist = {"RED": 0.4, "GREEN": 0.4, "VIOLET": 0.2}
-    
-    color_stability = 1.0
-    for color, expected in expected_dist.items():
-        actual = recent_colors.get(color, 0)
-        color_stability -= abs(actual - expected) * 0.5
-    
-    # 2. Number volatility stability
-    recent_numbers = recent["number"].astype(int)
-    current_volatility = recent_numbers.std()
-    historical_volatility = df.tail(lookback * 2).head(lookback)["number"].astype(int).std()
-    
-    volatility_stability = 1.0 - min(1.0, abs(current_volatility - historical_volatility) / max(historical_volatility, 1.0))
-    
-    # 3. Pattern consistency (streak analysis)
-    colors = recent["color"].tolist()
-    streak_changes = sum(1 for i in range(1, len(colors)) if colors[i] != colors[i-1])
-    expected_changes = len(colors) * 0.6  # Expected ~60% color changes
-    streak_stability = 1.0 - min(1.0, abs(streak_changes - expected_changes) / expected_changes)
-    
-    # Overall stability
-    overall_stability = (color_stability + volatility_stability + streak_stability) / 3
-    
-    # Determine if regime change occurred
-    regime_change = overall_stability < 0.7
-    
-    # Confidence penalty for unstable periods
-    confidence_penalty = max(0.0, 0.15 - overall_stability * 0.2)
-    
-    print(f"🔍 Market Regime Analysis:")
-    print(f"   Color Stability: {color_stability:.3f}")
-    print(f"   Volatility Stability: {volatility_stability:.3f}")
-    print(f"   Streak Stability: {streak_stability:.3f}")
-    print(f"   Overall Stability: {overall_stability:.3f}")
-    print(f"   Regime Change: {'YES' if regime_change else 'NO'}")
-    
-    return {
-        "stability": overall_stability,
-        "regime_change": regime_change,
-        "confidence_penalty": confidence_penalty
-    }
 
 # ====== LEGACY MOMENTUM-BASED ANALYSIS SYSTEM (DEPRECATED) ======
 
@@ -1158,13 +983,11 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
         return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
 
 def detect_strong_signals(df: pd.DataFrame, 
-                         ml_threshold: float = 0.65,
-                         size_threshold: float = 0.65,
+                         ml_threshold: float = 0.70,
+                         size_threshold: float = 0.70,
                          conn_str: str = None) -> List[Dict]:
-    """Detect strong signals using Machine Learning model with enhanced filtering.
-    Preference: COLOR signals only. SIZE is used only for ensemble agreement, not as a standalone alert.
-    """
-    signals: List[Dict] = []
+    """Detect strong signals using Machine Learning model with enhanced filtering"""
+    signals = []
     
     # Enhanced filtering: Check volatility
     volatility = detect_volatility(df)
@@ -1173,56 +996,73 @@ def detect_strong_signals(df: pd.DataFrame,
         print("⚠️  Skipping due to extreme volatility")
         return []
     
-    # Market regime analysis
-    regime_analysis = detect_market_regime_change(df)
-    if regime_analysis["regime_change"]:
-        print("⚠️  Market regime change detected - applying confidence penalty")
-        ml_threshold += regime_analysis["confidence_penalty"]
-        size_threshold += regime_analysis["confidence_penalty"]
-        print(f"🎯 Adjusted thresholds: ML={ml_threshold:.3f}, Size={size_threshold:.3f}")
-    
-    # 1. Machine Learning Analysis (Primary Method) - COLOR
+    # 1. Machine Learning Analysis (Primary Method)
     print("🤖 Running Machine Learning analysis...")
     ml_probs = analyze_with_ml_model(df, min_data_points=200)
     max_ml_confidence = max(ml_probs.values())
     print(f"🤖 ML analysis: max={max_ml_confidence:.3f} (threshold: {ml_threshold:.3f})")
     
-    color_signal: Optional[Dict] = None
-    if max_ml_confidence >= ml_threshold:
+    # Lower threshold for ML signals to generate more alerts
+    ml_alert_threshold = max(0.60, ml_threshold - 0.05)  # tighter: allow at most -0.05
+    
+    if max_ml_confidence >= ml_alert_threshold:
         best_color = max(ml_probs, key=ml_probs.get)
-        color_signal = {
+        signals.append({
             "type": "color",
             "color": best_color,
             "confidence": max_ml_confidence,
             "method": "MachineLearning",
             "reason": f"ML model predicts {best_color} with {max_ml_confidence:.3f} confidence",
-            "probs": ml_probs,
-        }
-        signals.append(color_signal)
+            "probs": ml_probs
+        })
     
-    # 2. Big/Small Analysis - used ONLY for ensemble agreement
+    # 2. Big/Small Analysis (Keep this as it's complementary to color prediction)
     size_probs, size_conf, size_reason = analyze_big_small(df)
-    print(f"⚖️  Size analysis (for ensemble only): conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
+    print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
+    
+    # Lower threshold for size signals to generate more alerts
+    size_alert_threshold = max(0.65, size_threshold - 0.05)  # tighter size threshold
+    
+    if size_conf >= size_alert_threshold:
+        best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
+        signals.append({
+            "type": "size",
+            "size": best_size,
+            "confidence": size_conf,
+            "method": "BigSmall",
+            "reason": f"Size analysis suggests {best_size} with {size_conf:.3f} confidence",
+            "probs": size_probs
+        })
     
     # 3. Ensemble Analysis (Combine ML with size if both are strong)
-    if color_signal and (size_conf >= size_threshold):
-        ensemble_confidence = (color_signal["confidence"] + size_conf) / 2
-        signals.append({
-            "type": "ensemble",
-            "color": color_signal["color"],
-            "size": ("BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"),
-            "confidence": min(0.95, ensemble_confidence + 0.05),
-            "method": "Ensemble",
-            "reason": f"ML+Size ensemble: {color_signal['color']} + agreement with size @ {size_conf:.3f}",
-            "probs": ml_probs,
-        })
+    color_signals = [s for s in signals if s["type"] == "color"]
+    size_signals = [s for s in signals if s["type"] == "size"]
+    
+    if color_signals and size_signals:
+        color_signal = color_signals[0]  # ML signal
+        size_signal = size_signals[0]    # Size signal
+        
+        # Create ensemble if both signals are strong
+        if color_signal["confidence"] >= 0.75 and size_signal["confidence"] >= 0.75:
+            ensemble_confidence = (color_signal["confidence"] + size_signal["confidence"]) / 2
+            signals.append({
+                "type": "ensemble",
+                "color": color_signal["color"],
+                "size": size_signal["size"],
+                "confidence": min(0.95, ensemble_confidence + 0.05),  # Bonus for agreement
+                "method": "Ensemble",
+                "reason": f"ML+Size ensemble: {color_signal['color']} + {size_signal['size']} with {ensemble_confidence:.3f} avg confidence",
+                "probs": ml_probs
+            })
     
     print(f"🎯 Total signals generated: {len(signals)}")
     for i, signal in enumerate(signals):
         if signal["type"] == "color":
             print(f"  Signal {i+1}: {signal['method']} - {signal['color']} @ {signal['confidence']:.3f}")
+        elif signal["type"] == "size":
+            print(f"  Signal {i+1}: {signal['method']} - {signal['size']} @ {signal['confidence']:.3f}")
         elif signal["type"] == "ensemble":
-            print(f"  Signal {i+1}: {signal['method']} - {signal['color']} + {signal.get('size','-')} @ {signal['confidence']:.3f}")
+            print(f"  Signal {i+1}: {signal['method']} - {signal['color']} + {signal['size']} @ {signal['confidence']:.3f}")
     
     return signals
 
@@ -1335,23 +1175,16 @@ def main():
     parser.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
                        default="balanced", help="Signal frequency preset")
     parser.add_argument("--max_signals", type=int, default=3, help="Maximum signals per run")
-    parser.add_argument("--color_prob_threshold", type=float, default=0.65, help="Minimum confidence for color signals")
+    parser.add_argument("--color_prob_threshold", type=float, default=0.68, help="Minimum confidence for color signals")
     parser.add_argument("--min_sources", type=int, default=2, help="Minimum sources for ensemble")
     parser.add_argument("--enable_alert", action="store_true", help="Enable Telegram alerts")
     parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
     parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
     parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
-    parser.add_argument("--ignore_sleep", action="store_true", help="Ignore sleep time and run anyway")
     # New: tunable alert gates so we can adjust without code edits
     parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
-    parser.add_argument("--violet_max_share", type=float, default=0.26, help="Maximum allowed recent VIOLET share (0-1) for alert")
+    parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
     args = parser.parse_args()
-    
-    # Check sleep time first (unless explicitly ignored)
-    if not args.ignore_sleep and is_sleep_time():
-        print("💤 Analysis skipped due to sleep time (1AM-9AM IST)")
-        print("💡 Use --ignore_sleep to force analysis during sleep hours")
-        return
     
     print("🚀 WinGo Momentum Analysis System")
     print("=" * 50)
@@ -1396,10 +1229,9 @@ def main():
             print(f"🎯 Target betting period: {target_period}")
             print("=" * 50)
         
-        # Resolve any pending alert outcomes (only for database mode)
-        if args.source == "db":
-            print("🔄 Resolving pending alert outcomes...")
-            resolve_unresolved_alerts(cfg.neon_conn_str)
+        # Resolve any pending alert outcomes
+        print("🔄 Resolving pending alert outcomes...")
+        resolve_unresolved_alerts(cfg.neon_conn_str)
         
         if len(df) < 100:
             print("❌ Insufficient data for analysis (need at least 100 rounds)")
@@ -1417,14 +1249,14 @@ def main():
                 return
             signals = detect_strong_signals(df, 
                                             ml_threshold=preset_config["momentum"],
-                                            size_threshold=0.55,
-                                            conn_str=None)
+                                            size_threshold=0.70,
+                                            conn_str=cfg.neon_conn_str)
         else:
             # Use default threshold
             signals = detect_strong_signals(df, 
                                             ml_threshold=args.color_prob_threshold,
-                                            size_threshold=0.55,
-                                            conn_str=None)
+                                            size_threshold=0.70,
+                                            conn_str=cfg.neon_conn_str)
     except Exception as e:
         print(f"❌ Error detecting signals: {e}")
         return
@@ -1478,108 +1310,152 @@ def main():
         # Sort signals by confidence to prioritize strongest
         signals = sorted(signals, key=lambda x: x["confidence"], reverse=True)
 
-        # Prefer COLOR or ENSEMBLE only; do not send SIZE-only alerts
+        # Prefer SIZE signal if its confidence >= color confidence + margin
+        prefer_size_margin = 0.08  # Tighter margin for preferring size over color
         best_signal = None
         if signals:
-            # Choose ensemble first if present, else the top color
-            ensemble_sig = next((s for s in signals if s.get("type") == "ensemble"), None)
-            color_sig = next((s for s in signals if s.get("type") == "color"), None)
-            best_signal = ensemble_sig or color_sig
-
-            if best_signal:
-                # Only alert if: Ensemble OR strong single-method (>=0.65)
-                is_ensemble = (best_signal.get("method") == "Ensemble")
-                strong = (best_signal["confidence"] >= 0.65)
-                if is_ensemble or strong:
-                    # Calculate the NEXT period ID for betting and ensure a safe buffer
-                    initial_period = get_next_betting_period(df)
-                    # Buffer requirements based on timing mode
-                    if args.mid_period_mode:
-                        min_buffer = 10
-                        print("🎯 Using 10s buffer for mid-period optimization")
-                    elif args.fast_mode:
-                        min_buffer = 10
-                        print("⚡ Using 10s buffer for fast mode")
+            top = signals[0]
+            top_color = next((s for s in signals if s["type"] == "color"), None)
+            top_size = next((s for s in signals if s["type"] == "size"), None)
+            if top_color and top_size and (top_size["confidence"] >= 0.70) and (top_size["confidence"] >= top_color["confidence"] + prefer_size_margin):
+                best_signal = top_size
+            else:
+                best_signal = top
+            
+            # Only alert if: Ensemble OR exceptionally strong single-method (>=0.72)
+            is_ensemble = (best_signal.get("method") == "Ensemble")
+            exceptionally_strong = (best_signal["confidence"] >= 0.75)
+            if is_ensemble or exceptionally_strong:
+                # Calculate the NEXT period ID for betting and ensure a safe buffer
+                initial_period = get_next_betting_period(df)
+                
+                # Buffer requirements based on timing mode
+                if args.mid_period_mode:
+                    min_buffer = 10  # Reduced for mid-period timing
+                    print("🎯 Using 10s buffer for mid-period optimization")
+                elif args.fast_mode:
+                    min_buffer = 10  # Reduced for fast mode
+                    print("⚡ Using 10s buffer for fast mode")
+                else:
+                    min_buffer = 15  # Reduced standard buffer
+                    print(f"🛡️  Using {min_buffer}s safety buffer")
+                
+                betting_period = ensure_min_time_buffer(df, initial_period, min_buffer_seconds=min_buffer)
+                
+                # If betting period was shifted due to time buffer, continue with same prediction
+                # The logic is: analyze anchor period → predict for betting period (with buffer)
+                if betting_period != initial_period:
+                    print(f"⏰ Time buffer applied - betting on period {betting_period} (shifted from {initial_period})")
+                
+                # Quality gates for alert sending
+                current_time = datetime.utcnow()
+                
+                # Calculate ETA more accurately
+                try:
+                    if len(betting_period) >= 12:
+                        # Parse the period ID to get the target time (UTC minute)
+                        target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+                        # Actual betting time is the next minute
+                        target_dt = target_dt + timedelta(minutes=1)
                     else:
-                        min_buffer = 15
-                        print(f"🛡️  Using {min_buffer}s safety buffer")
-                    betting_period = ensure_min_time_buffer(df, initial_period, min_buffer_seconds=min_buffer)
-                    if betting_period != initial_period:
-                        print(f"⏰ Time buffer applied - betting on period {betting_period} (shifted from {initial_period})")
-                    # Quality gates for alert sending
-                    current_time = datetime.utcnow()
+                        # Fallback: next minute boundary
+                        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                except Exception:
+                    # Fallback: next minute boundary
+                    target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+
+                # Guard: ensure target time is in the future
+                if target_dt <= current_time:
+                    target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                
+                eta_seconds = max(0, int((target_dt - current_time).total_seconds()))
+                
+                # Debug timing information
+                print(f"🕐 Current time: {current_time.strftime('%H:%M:%S')}")
+                print(f"🎯 Target time: {target_dt.strftime('%H:%M:%S')}")
+                print(f"⏱️  ETA: {eta_seconds} seconds")
+                
+                # Quality gate 1: ETA check (configurable)
+                if eta_seconds < args.eta_min_seconds:
+                    print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < {args.eta_min_seconds}s)")
+                    return
+                
+                # Quality gate 2: Backtest precision check
+                backtest_precision = backtest_ml_system(df, lookback=300)
+                if backtest_precision < 0.65:
+                    print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.65)")
+                    return
+                
+                # Quality gate 3: Violet share check (avoid periods with too much violet)
+                recent_colors = df.tail(120)["color"].tolist()
+                violet_share = recent_colors.count("VIOLET") / len(recent_colors)
+                if violet_share >= args.violet_max_share:
+                    print(f"❌ Skipping alert: Violet share too high ({violet_share:.3f} >= {args.violet_max_share})")
+                    return
+                
+                print(f"✅ Quality gates passed: ETA={eta_seconds}s, precision={backtest_precision:.3f}, violet={violet_share:.3f}")
+                
+                # Create unique alert key to prevent duplicates
+                if best_signal["type"] == "color":
+                    alert_key = f"{betting_period}_{best_signal['color']}_{best_signal['method']}"
+                else:
+                    alert_key = f"{betting_period}_{best_signal['size']}_{best_signal['method']}"
+                
+                # Cross-run reservation to dedupe globally by (period, type)
+                reserved = reserve_alert_slot(cfg.neon_conn_str, betting_period,
+                                              ("COLOR" if best_signal["type"] == "color" else "SIZE"))
+                if not reserved:
+                    print(f"Skipping alert due to existing reservation for {betting_period} {best_signal['type']}")
+                    return
+                # Also dedupe within this run
+                if alert_key in sent_alerts:
+                    print(f"Skipping duplicate alert for {alert_key}")
+                    return
+                
+                # Create alert message for NEXT period betting
+                # Only show the strongest signal (no mixing color + size)
+                if best_signal["type"] == "color":
+                    msg = format_color_alert(best_signal, betting_period, accuracy)
+                    print(f"🎨 Sending COLOR alert: {best_signal['color']} @ {best_signal['confidence']:.3f}")
+                elif best_signal["type"] == "size":
+                    msg = format_size_alert(best_signal, betting_period, accuracy)
+                    print(f"⚖️  Sending SIZE alert: {best_signal['size']} @ {best_signal['confidence']:.3f}")
+                
+                # Mark this alert as sent
+                sent_alerts.add(alert_key)
+                
+                # Send Telegram alert
+                ok = send_telegram(cfg, msg)
+                if best_signal["type"] == "color":
+                    print(f"Alert sent for {best_signal['color']}: {ok}")
+                else:
+                    print(f"Alert sent for {best_signal['size']}: {ok}")
+                
+                # Log to database if enabled
+                if args.log_to_db:
                     try:
-                        if len(betting_period) >= 12:
-                            target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
-                            target_dt = target_dt + timedelta(minutes=1)
-                        else:
-                            target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
-                    except Exception:
-                        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
-                    if target_dt <= current_time:
-                        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
-                    eta_seconds = max(0, int((target_dt - current_time).total_seconds()))
-                    print(f"🕐 Current time: {current_time.strftime('%H:%M:%S')}")
-                    print(f"🎯 Target time: {target_dt.strftime('%H:%M:%S')}")
-                    print(f"⏱️  ETA: {eta_seconds} seconds")
-                    if eta_seconds < args.eta_min_seconds:
-                        print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < {args.eta_min_seconds}s)")
-                        return
-                    backtest_precision = backtest_ml_system(df, lookback=300)
-                    if backtest_precision < 0.55:
-                        print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.55)")
-                        return
-                    recent_colors = df.tail(120)["color"].tolist()
-                    violet_share = recent_colors.count("VIOLET") / len(recent_colors)
-                    if violet_share >= args.violet_max_share:
-                        print(f"❌ Skipping alert: Violet share too high ({violet_share:.3f} >= {args.violet_max_share})")
-                        return
-                    print(f"✅ Quality gates passed: ETA={eta_seconds}s, precision={backtest_precision:.3f}, violet={violet_share:.3f}")
-                    # Create unique alert key
-                    alert_key = f"{betting_period}_{best_signal.get('color','COLOR')}_{best_signal['method']}"
-                    # Cross-run reservation to dedupe globally by (period, COLOR)
-                    reserved = reserve_alert_slot(cfg.neon_conn_str, betting_period, "COLOR")
-                    if not reserved:
-                        print(f"Skipping alert due to existing reservation for {betting_period} COLOR")
-                        return
-                    if alert_key in sent_alerts:
-                        print(f"Skipping duplicate alert for {alert_key}")
-                        return
-                    # Create alert message (COLOR or ENSEMBLE treated as color)
-                    if best_signal.get("type") in ("color", "ensemble"):
-                        msg = format_color_alert(best_signal if best_signal.get("type") == "color" else {
-                            "color": best_signal["color"],
-                            "method": best_signal["method"],
-                            "confidence": best_signal["confidence"],
-                            "reason": best_signal["reason"],
-                            "probs": best_signal["probs"],
-                        }, betting_period, accuracy)
-                        print(f"🎨 Sending COLOR alert: {best_signal.get('color','-')} @ {best_signal['confidence']:.3f}")
-                    sent_alerts.add(alert_key)
-                    ok = send_telegram(cfg, msg)
-                    print(f"Alert sent for COLOR {best_signal.get('color','-')}: {ok}")
-                    if args.log_to_db:
-                        try:
-                            anchor_pid = str(df["period_id"].iloc[-1])
+                        anchor_pid = str(df["period_id"].iloc[-1])
+                        if best_signal["type"] == "color":
                             log_alert_to_neon(
                                 cfg.neon_conn_str,
                                 anchor_pid,
-                                best_signal.get("color"),
+                                best_signal["color"],
                                 None,
-                                best_signal.get("probs", {}),
-                                [best_signal.get("method", "MachineLearning")],
-                                best_signal.get("confidence", 0.0),
+                                best_signal["probs"],
+                                [best_signal["method"]],
+                                best_signal["confidence"],
                                 accuracy,
                                 None,
                                 0.0,
                             )
-                        except Exception as e:
-                            print(f"Failed to log to database: {e}")
-                else:
-                    print(f"❌ Best signal confidence {best_signal['confidence']:.3f} below threshold 0.65 for color alerts")
+                        # Note: Size predictions not logged to database for now
+                    except Exception as e:
+                        print(f"Failed to log to database: {e}")
             else:
-                print("❌ No color/ensemble signals to alert")
-
+                print(f"❌ Best signal confidence {best_signal['confidence']:.3f} below threshold {alert_threshold}")
+        else:
+            print("❌ No signals to alert")
+    
         # Summary
         print("\n" + "="*50)
         print("📊 ANALYSIS SUMMARY")
