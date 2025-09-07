@@ -1181,6 +1181,7 @@ def main():
     parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
     parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
     parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
+    parser.add_argument("--disable_sleep_window", action="store_true", help="Ignore 1:00–9:00 IST quiet hours")
     # New: tunable alert gates so we can adjust without code edits
     parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
     parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
@@ -1195,6 +1196,14 @@ def main():
     print(f"🔧 Fast Mode: {args.fast_mode}")
     print("=" * 50)
     
+    # Respect sleep window (1:00–9:00 IST) unless disabled
+    if not args.disable_sleep_window:
+        now_utc = datetime.utcnow()
+        ist_now = now_utc + timedelta(hours=5, minutes=30)
+        if 1 <= ist_now.hour < 9:
+            print(f"🛌 Quiet hours active (IST {ist_now.strftime('%H:%M')}). Skipping analysis. Use --disable_sleep_window to override.")
+            return
+
     # Load data
     try:
         if args.source == "csv":
