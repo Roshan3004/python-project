@@ -1161,8 +1161,10 @@ def detect_strong_signals(df: pd.DataFrame,
                          ml_threshold: float = 0.65,
                          size_threshold: float = 0.65,
                          conn_str: str = None) -> List[Dict]:
-    """Detect strong signals using Machine Learning model with enhanced filtering"""
-    signals = []
+    """Detect strong signals using Machine Learning model with enhanced filtering.
+    Preference: COLOR signals only. SIZE is used only for ensemble agreement, not as a standalone alert.
+    """
+    signals: List[Dict] = []
     
     # Enhanced filtering: Check volatility
     volatility = detect_volatility(df)
@@ -1179,73 +1181,48 @@ def detect_strong_signals(df: pd.DataFrame,
         size_threshold += regime_analysis["confidence_penalty"]
         print(f"🎯 Adjusted thresholds: ML={ml_threshold:.3f}, Size={size_threshold:.3f}")
     
-    # 1. Machine Learning Analysis (Primary Method)
+    # 1. Machine Learning Analysis (Primary Method) - COLOR
     print("🤖 Running Machine Learning analysis...")
     ml_probs = analyze_with_ml_model(df, min_data_points=200)
     max_ml_confidence = max(ml_probs.values())
     print(f"🤖 ML analysis: max={max_ml_confidence:.3f} (threshold: {ml_threshold:.3f})")
     
-    # Use exact threshold for high-quality alerts only
-    ml_alert_threshold = ml_threshold  # Use exact threshold for 75%+ confidence
-    
-    if max_ml_confidence >= ml_alert_threshold:
+    color_signal: Optional[Dict] = None
+    if max_ml_confidence >= ml_threshold:
         best_color = max(ml_probs, key=ml_probs.get)
-        signals.append({
+        color_signal = {
             "type": "color",
             "color": best_color,
             "confidence": max_ml_confidence,
             "method": "MachineLearning",
             "reason": f"ML model predicts {best_color} with {max_ml_confidence:.3f} confidence",
-            "probs": ml_probs
-        })
+            "probs": ml_probs,
+        }
+        signals.append(color_signal)
     
-    # 2. Big/Small Analysis (Keep this as it's complementary to color prediction)
+    # 2. Big/Small Analysis - used ONLY for ensemble agreement
     size_probs, size_conf, size_reason = analyze_big_small(df)
-    print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
-    
-    # Use exact threshold for high-quality alerts only
-    size_alert_threshold = size_threshold  # Use exact threshold for 75%+ confidence
-    
-    if size_conf >= size_alert_threshold:
-        best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
-        signals.append({
-            "type": "size",
-            "size": best_size,
-            "confidence": size_conf,
-            "method": "BigSmall",
-            "reason": f"Size analysis suggests {best_size} with {size_conf:.3f} confidence",
-            "probs": size_probs
-        })
+    print(f"⚖️  Size analysis (for ensemble only): conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
     
     # 3. Ensemble Analysis (Combine ML with size if both are strong)
-    color_signals = [s for s in signals if s["type"] == "color"]
-    size_signals = [s for s in signals if s["type"] == "size"]
-    
-    if color_signals and size_signals:
-        color_signal = color_signals[0]  # ML signal
-        size_signal = size_signals[0]    # Size signal
-        
-        # Create ensemble if both signals are strong
-        if color_signal["confidence"] >= 0.75 and size_signal["confidence"] >= 0.75:
-            ensemble_confidence = (color_signal["confidence"] + size_signal["confidence"]) / 2
-            signals.append({
-                "type": "ensemble",
-                "color": color_signal["color"],
-                "size": size_signal["size"],
-                "confidence": min(0.95, ensemble_confidence + 0.05),  # Bonus for agreement
-                "method": "Ensemble",
-                "reason": f"ML+Size ensemble: {color_signal['color']} + {size_signal['size']} with {ensemble_confidence:.3f} avg confidence",
-                "probs": ml_probs
-            })
+    if color_signal and (size_conf >= size_threshold):
+        ensemble_confidence = (color_signal["confidence"] + size_conf) / 2
+        signals.append({
+            "type": "ensemble",
+            "color": color_signal["color"],
+            "size": ("BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"),
+            "confidence": min(0.95, ensemble_confidence + 0.05),
+            "method": "Ensemble",
+            "reason": f"ML+Size ensemble: {color_signal['color']} + agreement with size @ {size_conf:.3f}",
+            "probs": ml_probs,
+        })
     
     print(f"🎯 Total signals generated: {len(signals)}")
     for i, signal in enumerate(signals):
         if signal["type"] == "color":
             print(f"  Signal {i+1}: {signal['method']} - {signal['color']} @ {signal['confidence']:.3f}")
-        elif signal["type"] == "size":
-            print(f"  Signal {i+1}: {signal['method']} - {signal['size']} @ {signal['confidence']:.3f}")
         elif signal["type"] == "ensemble":
-            print(f"  Signal {i+1}: {signal['method']} - {signal['color']} + {signal['size']} @ {signal['confidence']:.3f}")
+            print(f"  Signal {i+1}: {signal['method']} - {signal['color']} + {signal.get('size','-')} @ {signal['confidence']:.3f}")
     
     return signals
 
@@ -1501,152 +1478,108 @@ def main():
         # Sort signals by confidence to prioritize strongest
         signals = sorted(signals, key=lambda x: x["confidence"], reverse=True)
 
-        # Prefer SIZE signal if its confidence >= color confidence + margin
-        prefer_size_margin = 0.05  # Increased margin for size preference
+        # Prefer COLOR or ENSEMBLE only; do not send SIZE-only alerts
         best_signal = None
         if signals:
-            top = signals[0]
-            top_color = next((s for s in signals if s["type"] == "color"), None)
-            top_size = next((s for s in signals if s["type"] == "size"), None)
-            if top_color and top_size and (top_size["confidence"] >= 0.70) and (top_size["confidence"] >= top_color["confidence"] + prefer_size_margin):
-                best_signal = top_size
-            else:
-                best_signal = top
-            
-            # Only alert if: Ensemble OR strong single-method (>=0.65)
-            is_ensemble = (best_signal.get("method") == "Ensemble")
-            strong = (best_signal["confidence"] >= 0.65)
-            if is_ensemble or strong:
-                # Calculate the NEXT period ID for betting and ensure a safe buffer
-                initial_period = get_next_betting_period(df)
-                
-                # Buffer requirements based on timing mode
-                if args.mid_period_mode:
-                    min_buffer = 10  # Reduced for mid-period timing
-                    print("🎯 Using 10s buffer for mid-period optimization")
-                elif args.fast_mode:
-                    min_buffer = 10  # Reduced for fast mode
-                    print("⚡ Using 10s buffer for fast mode")
-                else:
-                    min_buffer = 15  # Reduced standard buffer
-                    print(f"🛡️  Using {min_buffer}s safety buffer")
-                
-                betting_period = ensure_min_time_buffer(df, initial_period, min_buffer_seconds=min_buffer)
-                
-                # If betting period was shifted due to time buffer, continue with same prediction
-                # The logic is: analyze anchor period → predict for betting period (with buffer)
-                if betting_period != initial_period:
-                    print(f"⏰ Time buffer applied - betting on period {betting_period} (shifted from {initial_period})")
-                
-                # Quality gates for alert sending
-                current_time = datetime.utcnow()
-                
-                # Calculate ETA more accurately
-                try:
-                    if len(betting_period) >= 12:
-                        # Parse the period ID to get the target time (UTC minute)
-                        target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
-                        # Actual betting time is the next minute
-                        target_dt = target_dt + timedelta(minutes=1)
-                    else:
-                        # Fallback: next minute boundary
-                        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
-                except Exception:
-                    # Fallback: next minute boundary
-                    target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+            # Choose ensemble first if present, else the top color
+            ensemble_sig = next((s for s in signals if s.get("type") == "ensemble"), None)
+            color_sig = next((s for s in signals if s.get("type") == "color"), None)
+            best_signal = ensemble_sig or color_sig
 
-                # Guard: ensure target time is in the future
-                if target_dt <= current_time:
-                    target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
-                
-                eta_seconds = max(0, int((target_dt - current_time).total_seconds()))
-                
-                # Debug timing information
-                print(f"🕐 Current time: {current_time.strftime('%H:%M:%S')}")
-                print(f"🎯 Target time: {target_dt.strftime('%H:%M:%S')}")
-                print(f"⏱️  ETA: {eta_seconds} seconds")
-                
-                # Quality gate 1: ETA check (configurable)
-                if eta_seconds < args.eta_min_seconds:
-                    print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < {args.eta_min_seconds}s)")
-                    return
-                
-                # Quality gate 2: Backtest precision check
-                backtest_precision = backtest_ml_system(df, lookback=300)
-                if backtest_precision < 0.55:
-                    print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.55)")
-                    return
-                
-                # Quality gate 3: Violet share check (avoid periods with too much violet)
-                recent_colors = df.tail(120)["color"].tolist()
-                violet_share = recent_colors.count("VIOLET") / len(recent_colors)
-                if violet_share >= args.violet_max_share:
-                    print(f"❌ Skipping alert: Violet share too high ({violet_share:.3f} >= {args.violet_max_share})")
-                    return
-                
-                print(f"✅ Quality gates passed: ETA={eta_seconds}s, precision={backtest_precision:.3f}, violet={violet_share:.3f}")
-                
-                # Create unique alert key to prevent duplicates
-                if best_signal["type"] == "color":
-                    alert_key = f"{betting_period}_{best_signal['color']}_{best_signal['method']}"
-                else:
-                    alert_key = f"{betting_period}_{best_signal['size']}_{best_signal['method']}"
-                
-                # Cross-run reservation to dedupe globally by (period, type)
-                reserved = reserve_alert_slot(cfg.neon_conn_str, betting_period,
-                                              ("COLOR" if best_signal["type"] == "color" else "SIZE"))
-                if not reserved:
-                    print(f"Skipping alert due to existing reservation for {betting_period} {best_signal['type']}")
-                    return
-                # Also dedupe within this run
-                if alert_key in sent_alerts:
-                    print(f"Skipping duplicate alert for {alert_key}")
-                    return
-                
-                # Create alert message for NEXT period betting
-                # Only show the strongest signal (no mixing color + size)
-                if best_signal["type"] == "color":
-                    msg = format_color_alert(best_signal, betting_period, accuracy)
-                    print(f"🎨 Sending COLOR alert: {best_signal['color']} @ {best_signal['confidence']:.3f}")
-                elif best_signal["type"] == "size":
-                    msg = format_size_alert(best_signal, betting_period, accuracy)
-                    print(f"⚖️  Sending SIZE alert: {best_signal['size']} @ {best_signal['confidence']:.3f}")
-                
-                # Mark this alert as sent
-                sent_alerts.add(alert_key)
-                
-                # Send Telegram alert
-                ok = send_telegram(cfg, msg)
-                if best_signal["type"] == "color":
-                    print(f"Alert sent for {best_signal['color']}: {ok}")
-                else:
-                    print(f"Alert sent for {best_signal['size']}: {ok}")
-                
-                # Log to database if enabled
-                if args.log_to_db:
+            if best_signal:
+                # Only alert if: Ensemble OR strong single-method (>=0.65)
+                is_ensemble = (best_signal.get("method") == "Ensemble")
+                strong = (best_signal["confidence"] >= 0.65)
+                if is_ensemble or strong:
+                    # Calculate the NEXT period ID for betting and ensure a safe buffer
+                    initial_period = get_next_betting_period(df)
+                    # Buffer requirements based on timing mode
+                    if args.mid_period_mode:
+                        min_buffer = 10
+                        print("🎯 Using 10s buffer for mid-period optimization")
+                    elif args.fast_mode:
+                        min_buffer = 10
+                        print("⚡ Using 10s buffer for fast mode")
+                    else:
+                        min_buffer = 15
+                        print(f"🛡️  Using {min_buffer}s safety buffer")
+                    betting_period = ensure_min_time_buffer(df, initial_period, min_buffer_seconds=min_buffer)
+                    if betting_period != initial_period:
+                        print(f"⏰ Time buffer applied - betting on period {betting_period} (shifted from {initial_period})")
+                    # Quality gates for alert sending
+                    current_time = datetime.utcnow()
                     try:
-                        anchor_pid = str(df["period_id"].iloc[-1])
-                        if best_signal["type"] == "color":
+                        if len(betting_period) >= 12:
+                            target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+                            target_dt = target_dt + timedelta(minutes=1)
+                        else:
+                            target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                    except Exception:
+                        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                    if target_dt <= current_time:
+                        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                    eta_seconds = max(0, int((target_dt - current_time).total_seconds()))
+                    print(f"🕐 Current time: {current_time.strftime('%H:%M:%S')}")
+                    print(f"🎯 Target time: {target_dt.strftime('%H:%M:%S')}")
+                    print(f"⏱️  ETA: {eta_seconds} seconds")
+                    if eta_seconds < args.eta_min_seconds:
+                        print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < {args.eta_min_seconds}s)")
+                        return
+                    backtest_precision = backtest_ml_system(df, lookback=300)
+                    if backtest_precision < 0.55:
+                        print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.55)")
+                        return
+                    recent_colors = df.tail(120)["color"].tolist()
+                    violet_share = recent_colors.count("VIOLET") / len(recent_colors)
+                    if violet_share >= args.violet_max_share:
+                        print(f"❌ Skipping alert: Violet share too high ({violet_share:.3f} >= {args.violet_max_share})")
+                        return
+                    print(f"✅ Quality gates passed: ETA={eta_seconds}s, precision={backtest_precision:.3f}, violet={violet_share:.3f}")
+                    # Create unique alert key
+                    alert_key = f"{betting_period}_{best_signal.get('color','COLOR')}_{best_signal['method']}"
+                    # Cross-run reservation to dedupe globally by (period, COLOR)
+                    reserved = reserve_alert_slot(cfg.neon_conn_str, betting_period, "COLOR")
+                    if not reserved:
+                        print(f"Skipping alert due to existing reservation for {betting_period} COLOR")
+                        return
+                    if alert_key in sent_alerts:
+                        print(f"Skipping duplicate alert for {alert_key}")
+                        return
+                    # Create alert message (COLOR or ENSEMBLE treated as color)
+                    if best_signal.get("type") in ("color", "ensemble"):
+                        msg = format_color_alert(best_signal if best_signal.get("type") == "color" else {
+                            "color": best_signal["color"],
+                            "method": best_signal["method"],
+                            "confidence": best_signal["confidence"],
+                            "reason": best_signal["reason"],
+                            "probs": best_signal["probs"],
+                        }, betting_period, accuracy)
+                        print(f"🎨 Sending COLOR alert: {best_signal.get('color','-')} @ {best_signal['confidence']:.3f}")
+                    sent_alerts.add(alert_key)
+                    ok = send_telegram(cfg, msg)
+                    print(f"Alert sent for COLOR {best_signal.get('color','-')}: {ok}")
+                    if args.log_to_db:
+                        try:
+                            anchor_pid = str(df["period_id"].iloc[-1])
                             log_alert_to_neon(
                                 cfg.neon_conn_str,
                                 anchor_pid,
-                                best_signal["color"],
+                                best_signal.get("color"),
                                 None,
-                                best_signal["probs"],
-                                [best_signal["method"]],
-                                best_signal["confidence"],
+                                best_signal.get("probs", {}),
+                                [best_signal.get("method", "MachineLearning")],
+                                best_signal.get("confidence", 0.0),
                                 accuracy,
                                 None,
                                 0.0,
                             )
-                        # Note: Size predictions not logged to database for now
-                    except Exception as e:
-                        print(f"Failed to log to database: {e}")
+                        except Exception as e:
+                            print(f"Failed to log to database: {e}")
+                else:
+                    print(f"❌ Best signal confidence {best_signal['confidence']:.3f} below threshold 0.65 for color alerts")
             else:
-                print(f"❌ Best signal confidence {best_signal['confidence']:.3f} below threshold {alert_threshold}")
-        else:
-            print("❌ No signals to alert")
-    
+                print("❌ No color/ensemble signals to alert")
+
         # Summary
         print("\n" + "="*50)
         print("📊 ANALYSIS SUMMARY")
