@@ -1158,8 +1158,8 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
         return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
 
 def detect_strong_signals(df: pd.DataFrame, 
-                         ml_threshold: float = 0.70,
-                         size_threshold: float = 0.70,
+                         ml_threshold: float = 0.65,
+                         size_threshold: float = 0.65,
                          conn_str: str = None) -> List[Dict]:
     """Detect strong signals using Machine Learning model with enhanced filtering"""
     signals = []
@@ -1185,8 +1185,8 @@ def detect_strong_signals(df: pd.DataFrame,
     max_ml_confidence = max(ml_probs.values())
     print(f"🤖 ML analysis: max={max_ml_confidence:.3f} (threshold: {ml_threshold:.3f})")
     
-    # Lower threshold for ML signals to generate more alerts
-    ml_alert_threshold = max(0.55, ml_threshold - 0.10)  # 10% lower than preset threshold
+    # Use exact threshold for high-quality alerts only
+    ml_alert_threshold = ml_threshold  # Use exact threshold for 75%+ confidence
     
     if max_ml_confidence >= ml_alert_threshold:
         best_color = max(ml_probs, key=ml_probs.get)
@@ -1203,8 +1203,8 @@ def detect_strong_signals(df: pd.DataFrame,
     size_probs, size_conf, size_reason = analyze_big_small(df)
     print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
     
-    # Lower threshold for size signals to generate more alerts
-    size_alert_threshold = max(0.60, size_threshold - 0.10)  # 10% lower than preset threshold
+    # Use exact threshold for high-quality alerts only
+    size_alert_threshold = size_threshold  # Use exact threshold for 75%+ confidence
     
     if size_conf >= size_alert_threshold:
         best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
@@ -1358,7 +1358,7 @@ def main():
     parser.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
                        default="balanced", help="Signal frequency preset")
     parser.add_argument("--max_signals", type=int, default=3, help="Maximum signals per run")
-    parser.add_argument("--color_prob_threshold", type=float, default=0.68, help="Minimum confidence for color signals")
+    parser.add_argument("--color_prob_threshold", type=float, default=0.65, help="Minimum confidence for color signals")
     parser.add_argument("--min_sources", type=int, default=2, help="Minimum sources for ensemble")
     parser.add_argument("--enable_alert", action="store_true", help="Enable Telegram alerts")
     parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
@@ -1419,9 +1419,10 @@ def main():
             print(f"🎯 Target betting period: {target_period}")
             print("=" * 50)
         
-        # Resolve any pending alert outcomes
-        print("🔄 Resolving pending alert outcomes...")
-        resolve_unresolved_alerts(cfg.neon_conn_str)
+        # Resolve any pending alert outcomes (only for database mode)
+        if args.source == "db":
+            print("🔄 Resolving pending alert outcomes...")
+            resolve_unresolved_alerts(cfg.neon_conn_str)
         
         if len(df) < 100:
             print("❌ Insufficient data for analysis (need at least 100 rounds)")
@@ -1439,14 +1440,14 @@ def main():
                 return
             signals = detect_strong_signals(df, 
                                             ml_threshold=preset_config["momentum"],
-                                            size_threshold=0.70,
-                                            conn_str=cfg.neon_conn_str)
+                                            size_threshold=0.55,
+                                            conn_str=None)
         else:
             # Use default threshold
             signals = detect_strong_signals(df, 
                                             ml_threshold=args.color_prob_threshold,
-                                            size_threshold=0.70,
-                                            conn_str=cfg.neon_conn_str)
+                                            size_threshold=0.55,
+                                            conn_str=None)
     except Exception as e:
         print(f"❌ Error detecting signals: {e}")
         return
@@ -1512,10 +1513,10 @@ def main():
             else:
                 best_signal = top
             
-            # Only alert if: Ensemble OR exceptionally strong single-method (>=0.72)
+            # Only alert if: Ensemble OR strong single-method (>=0.65)
             is_ensemble = (best_signal.get("method") == "Ensemble")
-            exceptionally_strong = (best_signal["confidence"] >= 0.72)
-            if is_ensemble or exceptionally_strong:
+            strong = (best_signal["confidence"] >= 0.65)
+            if is_ensemble or strong:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 initial_period = get_next_betting_period(df)
                 
@@ -1572,8 +1573,8 @@ def main():
                 
                 # Quality gate 2: Backtest precision check
                 backtest_precision = backtest_ml_system(df, lookback=300)
-                if backtest_precision < 0.62:
-                    print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.62)")
+                if backtest_precision < 0.55:
+                    print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.55)")
                     return
                 
                 # Quality gate 3: Violet share check (avoid periods with too much violet)
