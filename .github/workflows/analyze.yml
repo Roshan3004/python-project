@@ -88,6 +88,8 @@ jobs:
         
         echo "🔗 Environment variables checked"
         echo "=========================================="
+        echo "⏳ Fixed start delay: 71 seconds (waiting for current period to close)"
+        sleep 71
         
         # Build flags from inputs
         FAST_FLAG=$([[ "${{ github.event.inputs.enable_fast_mode }}" == "false" ]] && echo "" || echo "--fast_mode")
