@@ -31,7 +31,7 @@ jobs:
         python train_model.py --progressive --validate --model_dir models
         
     - name: Upload model artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: trained-model
         path: models/
