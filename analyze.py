@@ -1264,6 +1264,10 @@ def main():
         # Startup alignment: wait until next minute + offset before fetching data
         parser.add_argument("--align_startup_sleep", action="store_true", help="Sleep until next minute + offset before analysis")
         parser.add_argument("--align_offset_seconds", type=int, default=11, help="Extra seconds after minute boundary to start (default 11)")
+        # Optional speed controls
+        parser.add_argument("--fresh_seconds", type=int, default=None, help="Require newest row to be ≤ this many seconds old")
+        parser.add_argument("--max_wait_seconds", type=int, default=None, help="Max seconds to retry for fresh data")
+        parser.add_argument("--min_buffer_seconds", type=int, default=None, help="Override safety buffer before betting period")
         args = parser.parse_args()
     except Exception as e:
         print(f"❌ Error parsing arguments: {e}")
@@ -1324,12 +1328,18 @@ def main():
                 max_wait = 15       # Allow more time for period completion
                 print("🎯 Mid-period mode enabled - optimized for fresh period data")
             elif args.fast_mode:
-                fresh_seconds = 15  # Reduced from 20
-                max_wait = 8        # Reduced from 10
+                fresh_seconds = 12  # Faster freshness target
+                max_wait = 6        # Shorter retry window
                 print("⚡ Fast mode enabled - reduced delays for quicker alerts")
             else:
-                fresh_seconds = 20  # Reduced from 25
-                max_wait = 12       # Reduced from 15
+                fresh_seconds = 18  # Slightly faster default
+                max_wait = 10       # Slightly shorter default wait
+
+            # Allow explicit overrides from CLI
+            if args.fresh_seconds is not None:
+                fresh_seconds = max(0, int(args.fresh_seconds))
+            if args.max_wait_seconds is not None:
+                max_wait = max(0, int(args.max_wait_seconds))
             
             print(f"📥 Loading {args.limit} rows from database...")
             df = ensure_fresh_neon_data(cfg, args.limit, fresh_seconds, max_wait)
@@ -1471,7 +1481,9 @@ def main():
                 initial_period = get_next_betting_period(df)
                 
                 # Buffer requirements based on timing mode
-                if args.mid_period_mode:
+                if args.min_buffer_seconds is not None:
+                    min_buffer = max(0, int(args.min_buffer_seconds))
+                elif args.mid_period_mode:
                     min_buffer = 10  # Reduced for mid-period timing
                     print("🎯 Using 10s buffer for mid-period optimization")
                 elif args.fast_mode:
