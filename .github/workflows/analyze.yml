@@ -25,7 +25,7 @@ jobs:
         pip install -r requirements.txt
         
     - name: Download latest model
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: trained-model
         path: models/
@@ -75,7 +75,7 @@ jobs:
         echo "✅ Analysis completed successfully!"
         
     - name: Upload updated model
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: trained-model
         path: models/
