@@ -1261,6 +1261,9 @@ def main():
         # New: tunable alert gates so we can adjust without code edits
         parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
         parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
+        # Startup alignment: wait until next minute + offset before fetching data
+        parser.add_argument("--align_startup_sleep", action="store_true", help="Sleep until next minute + offset before analysis")
+        parser.add_argument("--align_offset_seconds", type=int, default=11, help="Extra seconds after minute boundary to start (default 11)")
         args = parser.parse_args()
     except Exception as e:
         print(f"❌ Error parsing arguments: {e}")
@@ -1275,6 +1278,21 @@ def main():
     print(f"🔧 Fast Mode: {args.fast_mode}")
     print("=" * 50)
     
+    # Optional startup alignment sleep to allow the current period to finish
+    if args.align_startup_sleep:
+        now = datetime.utcnow()
+        next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+        target_start = next_minute + timedelta(seconds=max(0, args.align_offset_seconds))
+        # If we already passed, push one more minute
+        if target_start <= now:
+            target_start = target_start + timedelta(minutes=1)
+        sleep_seconds = int((target_start - now).total_seconds())
+        if sleep_seconds > 0:
+            print(f"⏳ Startup alignment: sleeping {sleep_seconds}s until {target_start.strftime('%H:%M:%S')} UTC")
+            time.sleep(sleep_seconds)
+        else:
+            print("⏳ Startup alignment: no sleep needed")
+
     # Respect sleep window (1:00–9:00 IST) unless disabled
     if not args.disable_sleep_window:
         now_utc = datetime.utcnow()
@@ -1477,9 +1495,8 @@ def main():
                 try:
                     if len(betting_period) >= 12:
                         # Parse the period ID to get the target time (UTC minute)
+                        # betting_period already encodes the minute to bet on
                         target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
-                        # Actual betting time is the next minute
-                        target_dt = target_dt + timedelta(minutes=1)
                     else:
                         # Fallback: next minute boundary
                         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
