@@ -5,12 +5,10 @@ import pandas as pd
 import numpy as np
 from scipy.stats import chisquare
 import requests
-from lightgbm import LGBMClassifier, early_stopping
+from lightgbm import LGBMClassifier
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
-import pickle
-from pathlib import Path
 from db import MongoStore
 from strategy import suggest_next, suggest_from_ensemble
 from config import ScraperConfig
@@ -21,173 +19,6 @@ from momentum_config import (
     get_max_signals_per_run,
     get_preset_config
 )
-from sqlalchemy import create_engine
-
-# ====== MODEL PERSISTENCE FUNCTIONS ======
-def load_saved_model(model_path: str = "models/lightgbm_model.pkl") -> Optional[LGBMClassifier]:
-    """Load saved model with fallback handling"""
-    try:
-        if os.path.exists(model_path):
-            with open(model_path, 'rb') as f:
-                model = pickle.load(f)
-            print(f"✅ Loaded saved model from {model_path}")
-            return model
-    except Exception as e:
-        print(f"⚠️ Failed to load saved model: {e}")
-    return None
-
-def save_model(model: LGBMClassifier, model_path: str = "models/lightgbm_model.pkl") -> bool:
-    """Save model with directory creation"""
-    try:
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        with open(model_path, 'wb') as f:
-            pickle.dump(model, f)
-        return True
-    except Exception as e:
-        print(f"⚠️ Failed to save model: {e}")
-        return False
-
-def validate_model_on_recent_data(model: LGBMClassifier, df: pd.DataFrame, recent_rows: int = 200) -> float:
-    """Quick validation of model on recent data"""
-    try:
-        if len(df) < recent_rows + 50:
-            return 0.5  # Default if insufficient data
-        
-        recent_df = df.tail(recent_rows)
-        X, y = build_ml_features(recent_df, is_training=True)
-        
-        if len(X) < 20:
-            return 0.5
-        
-        y_pred = model.predict(X)
-        accuracy = accuracy_score(y, y_pred)
-        return float(accuracy)
-    except Exception:
-        return 0.5
-
-def build_ml_features(df: pd.DataFrame, is_training: bool = True) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Build ML features (extracted from analyze_with_ml_model for reuse)"""
-    features_list = []
-    targets = [] if is_training else None
-    
-    # Use appropriate data size
-    max_rows = 1000 if not is_training else min(800, len(df))
-    train_data = df.tail(max_rows).copy()
-    
-    if is_training:
-        max_samples = min(300, len(train_data) - 50)
-        start_idx = max(50, len(train_data) - max_samples - 50)
-    else:
-        max_samples = min(200, len(train_data) - 30)
-        start_idx = max(30, len(train_data) - max_samples - 30)
-    
-    for i in range(start_idx, len(train_data)):
-        features = []
-        
-        # Time features
-        try:
-            timestamp = pd.to_datetime(train_data.iloc[i]["scraped_at"])
-            features.extend([timestamp.hour, timestamp.minute, timestamp.weekday()])
-        except Exception:
-            features.extend([12, 0, 0])
-        
-        # Historical color features (1, 2, 3 rounds ago)
-        for lag in [1, 2, 3]:
-            if i - lag >= 0:
-                color = train_data.iloc[i - lag]["color"]
-                features.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0))
-            else:
-                features.append(0)
-        
-        # Frequency features (last 10, 30, 50)
-        for window in [10, 30, 50]:
-            if i >= window:
-                window_data = train_data.iloc[i - window:i]
-                red_freq = (window_data["color"] == "RED").sum() / window
-                green_freq = (window_data["color"] == "GREEN").sum() / window
-                violet_freq = (window_data["color"] == "VIOLET").sum() / window
-                features.extend([red_freq, green_freq, violet_freq])
-            else:
-                features.extend([0.33, 0.33, 0.34])
-        
-        # Current streak based on previous color
-        if i - 1 >= 0:
-            current_color = train_data.iloc[i - 1]["color"]
-            streak = 1
-            for j in range(i - 2, max(0, i - 10), -1):
-                if train_data.iloc[j]["color"] == current_color:
-                    streak += 1
-                else:
-                    break
-            features.append(min(streak, 10))
-        else:
-            features.append(1)
-        
-        # Number patterns (last 20)
-        if i >= 20:
-            recent_numbers = train_data.iloc[i - 20:i]["number"].astype(int).tolist()
-            for num in range(10):
-                features.append(recent_numbers.count(num) / 20)
-            features.append(max(recent_numbers))
-            features.append(min(recent_numbers))
-            features.append(float(np.mean(recent_numbers)))
-            features.append(float(np.std(recent_numbers)))
-        else:
-            features.extend([0.1] * 10)
-            features.extend([5, 0, 5, 0])
-        
-        # Number volatility std over last 15 and 45
-        for vol_window in [15, 45]:
-            if i >= vol_window:
-                nums_win = train_data.iloc[i - vol_window:i]["number"].astype(int).values
-                features.append(float(np.std(nums_win)))
-            else:
-                features.append(0.0)
-        
-        # Time since last VIOLET
-        lookback_slice = train_data.iloc[:i]
-        last_violet_idx = None
-        if len(lookback_slice) > 0:
-            violet_positions = np.where(lookback_slice["color"].values == "VIOLET")[0]
-            if violet_positions.size > 0:
-                last_violet_idx = int(violet_positions[-1])
-        if last_violet_idx is not None:
-            features.append(float(i - last_violet_idx))
-        else:
-            features.append(float(min(i, 100)))
-        
-        # Markov BIG probability from analyze_big_small
-        try:
-            if i >= 20:
-                temp_df = train_data.iloc[max(0, i - 60):i][["number", "color"]].copy()
-                temp_df["number"] = temp_df["number"].astype(int)
-                size_probs, _, _ = analyze_big_small(temp_df, lookback=min(60, len(temp_df)))
-                features.append(float(size_probs.get("BIG", 0.5)))
-            else:
-                features.append(0.5)
-        except Exception:
-            features.append(0.5)
-        
-        # Lag numbers 1 and 2
-        for lag in [1, 2]:
-            if i - lag >= 0:
-                try:
-                    features.append(int(train_data.iloc[i - lag]["number"]))
-                except Exception:
-                    features.append(0)
-            else:
-                features.append(0)
-        
-        # Target for training
-        if is_training:
-            target_color = train_data.iloc[i]["color"]
-            targets.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(target_color, 0))
-        
-        features_list.append(features)
-    
-    X = np.array(features_list)
-    y = np.array(targets) if is_training else None
-    return X, y
 
 # ====== Helpers for size (Big/Small) ======
 def number_to_size(n: int) -> str:
@@ -316,21 +147,17 @@ def load_csv(path: str) -> pd.DataFrame:
     return df
 
 def load_neon(conn_str: str, limit: int = 1500) -> pd.DataFrame:
-    """Load data directly from Neon PostgreSQL using SQLAlchemy engine for speed/stability"""
+    """Load data directly from Neon PostgreSQL"""
+    import psycopg2
     query = f"""
-    SELECT period_id, number, color, scraped_at
-    FROM game_history
-    ORDER BY scraped_at DESC
+    SELECT period_id, number, color, scraped_at 
+    FROM game_history 
+    ORDER BY scraped_at DESC 
     LIMIT {limit}
     """
-    engine = create_engine(conn_str)
-    try:
-        df = pd.read_sql(query, engine)
-    finally:
-        try:
-            engine.dispose()
-        except Exception:
-            pass
+    conn = psycopg2.connect(conn_str)
+    df = pd.read_sql(query, conn)
+    conn.close()
     return df.sort_values("period_id")
 
 def ensure_fresh_neon_data(cfg: ScraperConfig, limit: int, fresh_seconds: int = 20, max_wait_seconds: int = 12) -> pd.DataFrame:
@@ -752,8 +579,8 @@ def summarize_flags(flags: Dict[str,bool]) -> Tuple[bool, str]:
 
 def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[str, float]:
     """
-    Hybrid ML approach: Load saved model + fine-tune with recent data
-    
+    Use LightGBM to predict next round color with advanced features.
+
     Features:
     - Time of day (hour, minute, weekday)
     - Colors from 1, 2, 3 rounds ago (encoded)
@@ -770,104 +597,231 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
 
     try:
-        # Try to load saved model first
-        saved_model = load_saved_model()
-        use_saved_model = saved_model is not None
-        
-        if use_saved_model:
-            # Validate saved model on recent data
-            recent_accuracy = validate_model_on_recent_data(saved_model, df, recent_rows=200)
-            print(f"🔍 Saved model recent accuracy: {recent_accuracy:.3f}")
-            
-            # If saved model performs poorly, fall back to training from scratch
-            if recent_accuracy < 0.45:
-                print("⚠️  Saved model performance poor, training from scratch")
-                use_saved_model = False
-                saved_model = None
-        
-        if use_saved_model:
-            # Respect fast mode: skip fine-tuning to reduce latency
-            fast_mode = os.getenv("WINGO_FAST_MODE", "0") == "1"
-            model = saved_model
-            if fast_mode:
-                print("⚡ Fast mode: skipping fine-tune to reduce latency")
-            else:
-                # Use saved model as base, fine-tune with recent data
-                print("🔄 Fine-tuning saved model with recent data...")
-                
-                # Fine-tune with recent data (last 500-1000 rows)
-                X_recent, y_recent = build_ml_features(df, is_training=True)
-                
-                if len(X_recent) >= 80:  # Minimum for fine-tuning with a small val split
-                    # Create a small validation split to enable early stopping
-                    Xr_tr, Xr_val, yr_tr, yr_val = train_test_split(
-                        X_recent, y_recent, test_size=0.2, random_state=42, stratify=y_recent
-                    )
-                    model.fit(
-                        Xr_tr,
-                        yr_tr,
-                        eval_set=[(Xr_val, yr_val)],
-                        callbacks=[early_stopping(stopping_rounds=10)]
-                    )
-                    print(f"✅ Fine-tuned model on {len(X_recent)} recent samples")
+        features_list = []
+        targets = []
+
+        train_data = df.tail(min(800, len(df))).copy()
+        max_samples = min(300, len(train_data) - 50)
+        start_idx = max(50, len(train_data) - max_samples - 50)
+
+        for i in range(start_idx, len(train_data)):
+            features = []
+
+            # Time features
+            try:
+                timestamp = pd.to_datetime(train_data.iloc[i]["scraped_at"])
+                features.extend([timestamp.hour, timestamp.minute, timestamp.weekday()])
+            except Exception:
+                features.extend([12, 0, 0])
+
+            # Historical color features (1, 2, 3 rounds ago)
+            for lag in [1, 2, 3]:
+                if i - lag >= 0:
+                    color = train_data.iloc[i - lag]["color"]
+                    features.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0))
                 else:
-                    print("⚠️  Insufficient recent data for fine-tuning, using saved model as-is")
-        else:
-            # Train from scratch (fallback)
-            print("🏋️ Training new model from scratch...")
-            X, y = build_ml_features(df, is_training=True)
-            
-            if len(X) < 100:
-                print("⚠️  Not enough training samples for ML model")
-                return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-            
-            X_train, X_val, y_train, y_val = train_test_split(
-                X, y, test_size=0.2, random_state=42, stratify=y
-            )
-            
-            model = LGBMClassifier(
-                n_estimators=200,
-                max_depth=6,
-                learning_rate=0.07,
-                random_state=42,
-                verbose=-1,
-                class_weight='balanced',
-                subsample=0.8,
-                colsample_bytree=0.8
-            )
-            model.fit(X_train, y_train)
-            
-            y_pred = model.predict(X_val)
-            accuracy = accuracy_score(y_val, y_pred)
-            print(f"🤖 New Model Accuracy: {accuracy:.3f}")
+                    features.append(0)
+
+            # Frequency features (last 10, 30, 50)
+            for window in [10, 30, 50]:
+                if i >= window:
+                    window_data = train_data.iloc[i - window:i]
+                    red_freq = (window_data["color"] == "RED").sum() / window
+                    green_freq = (window_data["color"] == "GREEN").sum() / window
+                    violet_freq = (window_data["color"] == "VIOLET").sum() / window
+                    features.extend([red_freq, green_freq, violet_freq])
+                else:
+                    features.extend([0.33, 0.33, 0.34])
+
+            # Current streak based on previous color
+            if i - 1 >= 0:
+                current_color = train_data.iloc[i - 1]["color"]
+                streak = 1
+                for j in range(i - 2, max(0, i - 10), -1):
+                    if train_data.iloc[j]["color"] == current_color:
+                        streak += 1
+                    else:
+                        break
+                features.append(min(streak, 10))
+            else:
+                features.append(1)
+
+            # Number patterns (last 20)
+            if i >= 20:
+                recent_numbers = train_data.iloc[i - 20:i]["number"].astype(int).tolist()
+                for num in range(10):
+                    features.append(recent_numbers.count(num) / 20)
+                features.append(max(recent_numbers))
+                features.append(min(recent_numbers))
+                features.append(float(np.mean(recent_numbers)))
+                features.append(float(np.std(recent_numbers)))
+            else:
+                features.extend([0.1] * 10)
+                features.extend([5, 0, 5, 0])
+
+            # Number volatility std over last 15 and 45
+            for vol_window in [15, 45]:
+                if i >= vol_window:
+                    nums_win = train_data.iloc[i - vol_window:i]["number"].astype(int).values
+                    features.append(float(np.std(nums_win)))
+                else:
+                    features.append(0.0)
+
+            # Time since last VIOLET
+            lookback_slice = train_data.iloc[:i]
+            last_violet_idx = None
+            if len(lookback_slice) > 0:
+                violet_positions = np.where(lookback_slice["color"].values == "VIOLET")[0]
+                if violet_positions.size > 0:
+                    last_violet_idx = int(violet_positions[-1])
+            if last_violet_idx is not None:
+                features.append(float(i - last_violet_idx))
+            else:
+                features.append(float(min(i, 100)))
+
+            # Markov BIG probability from analyze_big_small
+            try:
+                if i >= 20:
+                    temp_df = train_data.iloc[max(0, i - 60):i][["number", "color"]].copy()
+                    temp_df["number"] = temp_df["number"].astype(int)
+                    size_probs, _, _ = analyze_big_small(temp_df, lookback=min(60, len(temp_df)))
+                    features.append(float(size_probs.get("BIG", 0.5)))
+                else:
+                    features.append(0.5)
+            except Exception:
+                features.append(0.5)
+
+            # Lag numbers 1 and 2
+            for lag in [1, 2]:
+                if i - lag >= 0:
+                    try:
+                        features.append(int(train_data.iloc[i - lag]["number"]))
+                    except Exception:
+                        features.append(0)
+                else:
+                    features.append(0)
+
+            # Target
+            target_color = train_data.iloc[i]["color"]
+            targets.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(target_color, 0))
+            features_list.append(features)
+
+        if len(features_list) < 100:
+            print("⚠️  Not enough training samples for ML model")
+            return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+
+        X = np.array(features_list)
+        y = np.array(targets)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=0.2, random_state=42, stratify=y
+        )
+
+        model = LGBMClassifier(
+            n_estimators=200,
+            max_depth=6,
+            learning_rate=0.07,
+            random_state=42,
+            verbose=-1,
+            class_weight='balanced',
+            subsample=0.8,
+            colsample_bytree=0.8
+        )
+        model.fit(X_train, y_train)
+
+        y_pred = model.predict(X_val)
+        accuracy = accuracy_score(y_val, y_pred)
+        print(f"🤖 ML Model Accuracy: {accuracy:.3f}")
 
         # Build current features for prediction
-        X_current, _ = build_ml_features(df, is_training=False)
-        
-        if len(X_current) == 0:
-            print("⚠️  No features for prediction")
-            return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-        
-        # Make prediction
+        current_features = []
+        try:
+            current_time = datetime.utcnow()
+            current_features.extend([current_time.hour, current_time.minute, current_time.weekday()])
+        except Exception:
+            current_features.extend([12, 0, 0])
+
+        for lag in [1, 2, 3]:
+            if len(df) >= lag:
+                color = df.iloc[-lag]["color"]
+                current_features.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0))
+            else:
+                current_features.append(0)
+
+        for window in [10, 30, 50]:
+            if len(df) >= window:
+                window_data = df.tail(window)
+                red_freq = (window_data["color"] == "RED").sum() / window
+                green_freq = (window_data["color"] == "GREEN").sum() / window
+                violet_freq = (window_data["color"] == "VIOLET").sum() / window
+                current_features.extend([red_freq, green_freq, violet_freq])
+            else:
+                current_features.extend([0.33, 0.33, 0.34])
+
+        if len(df) >= 2:
+            current_color = df.iloc[-1]["color"]
+            streak = 1
+            for k in range(len(df) - 2, max(0, len(df) - 10), -1):
+                if df.iloc[k]["color"] == current_color:
+                    streak += 1
+                else:
+                    break
+            current_features.append(min(streak, 10))
+        else:
+            current_features.append(1)
+
+        if len(df) >= 20:
+            recent_numbers = df.tail(20)["number"].astype(int).tolist()
+            for num in range(10):
+                current_features.append(recent_numbers.count(num) / 20)
+            current_features.append(max(recent_numbers))
+            current_features.append(min(recent_numbers))
+            current_features.append(float(np.mean(recent_numbers)))
+            current_features.append(float(np.std(recent_numbers)))
+        else:
+            current_features.extend([0.1] * 10)
+            current_features.extend([5, 0, 5, 0])
+
+        for vol_window in [15, 45]:
+            if len(df) >= vol_window:
+                nums_win = df.tail(vol_window)["number"].astype(int).values
+                current_features.append(float(np.std(nums_win)))
+            else:
+                current_features.append(0.0)
+
+        last_violet_pos = None
+        if len(df) > 0:
+            violet_positions = np.where(df["color"].values == "VIOLET")[0]
+            if violet_positions.size > 0:
+                last_violet_pos = int(violet_positions[-1])
+        if last_violet_pos is not None:
+            current_features.append(float(len(df) - 1 - last_violet_pos))
+        else:
+            current_features.append(float(min(len(df), 100)))
+
+        try:
+            temp_df = df.tail(min(60, len(df)))[["number", "color"]].copy()
+            if len(temp_df) >= 20:
+                temp_df["number"] = temp_df["number"].astype(int)
+                size_probs, _, _ = analyze_big_small(temp_df, lookback=min(60, len(temp_df)))
+                current_features.append(float(size_probs.get("BIG", 0.5)))
+            else:
+                current_features.append(0.5)
+        except Exception:
+            current_features.append(0.5)
+
+        for lag in [1, 2]:
+            if len(df) >= lag:
+                try:
+                    current_features.append(int(df.iloc[-lag]["number"]))
+                except Exception:
+                    current_features.append(0)
+            else:
+                current_features.append(0)
+
+        X_current = np.array([current_features])
         probabilities = model.predict_proba(X_current)[0]
         color_probs = {"RED": probabilities[0], "GREEN": probabilities[1], "VIOLET": probabilities[2]}
         print(f"🤖 ML Prediction: R={color_probs['RED']:.3f}, G={color_probs['GREEN']:.3f}, V={color_probs['VIOLET']:.3f}")
-        
-        # Save updated model (if fine-tuned or newly trained)
-        if not use_saved_model or (not os.getenv("WINGO_FAST_MODE", "0") == "1" and 'X_recent' in locals() and len(X_recent) >= 50):
-            save_model(model)
-            print("💾 Model saved for next run")
-            
-            # Log progressive scaling info if available
-            try:
-                from train_model import get_current_week_number
-                current_week = get_current_week_number()
-                current_limit = min(23000 + (current_week * 10000), 80000)
-                progress = min(100, (current_limit / 80000) * 100)
-                print(f"📈 Progressive scaling: Week {current_week}, {current_limit:,} rows ({progress:.1f}% to 80k target)")
-            except Exception:
-                pass
-        
         return color_probs
 
     except Exception as e:
@@ -1240,38 +1194,27 @@ def backtest_ml_system(df: pd.DataFrame, lookback: int = 300) -> float:
         return 0.5
 
 def main():
-    try:
-        parser = argparse.ArgumentParser(description="WinGo Momentum Analysis System")
-        parser.add_argument("--source", choices=["csv", "db"], default="db", help="Data source")
-        parser.add_argument("--csv_path", default="game_history.csv", help="CSV file path")
-        parser.add_argument("--limit", type=int, default=2000, help="Number of rows to load")
-        parser.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
-                           default="balanced", help="Signal frequency preset")
-        parser.add_argument("--max_signals", type=int, default=3, help="Maximum signals per run")
-        parser.add_argument("--color_prob_threshold", type=float, default=0.68, help="Minimum confidence for color signals")
-        parser.add_argument("--min_sources", type=int, default=2, help="Minimum sources for ensemble")
-        parser.add_argument("--enable_alert", action="store_true", help="Enable Telegram alerts")
-        parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
-        parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
-        parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
-        parser.add_argument("--disable_sleep_window", action="store_true", help="Ignore 1:00–9:00 IST quiet hours")
-        parser.add_argument("--min_prob_margin", type=float, default=0.20, help="Require top1-top2 prob margin before alert")
-        parser.add_argument("--max_entropy", type=float, default=0.85, help="Max allowed entropy of probs for alert (lower = stricter)")
-        parser.add_argument("--enable_recent_penalty", action="store_true", help="Penalize threshold if recent accuracy is low")
-        # New: tunable alert gates so we can adjust without code edits
-        parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
-        parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
-        # Startup alignment: wait until next minute + offset before fetching data
-        parser.add_argument("--align_startup_sleep", action="store_true", help="Sleep until next minute + offset before analysis")
-        parser.add_argument("--align_offset_seconds", type=int, default=11, help="Extra seconds after minute boundary to start (default 11)")
-        # Optional speed controls
-        parser.add_argument("--fresh_seconds", type=int, default=None, help="Require newest row to be ≤ this many seconds old")
-        parser.add_argument("--max_wait_seconds", type=int, default=None, help="Max seconds to retry for fresh data")
-        parser.add_argument("--min_buffer_seconds", type=int, default=None, help="Override safety buffer before betting period")
-        args = parser.parse_args()
-    except Exception as e:
-        print(f"❌ Error parsing arguments: {e}")
-        return
+    parser = argparse.ArgumentParser(description="WinGo Momentum Analysis System")
+    parser.add_argument("--source", choices=["csv", "db"], default="db", help="Data source")
+    parser.add_argument("--csv_path", default="game_history.csv", help="CSV file path")
+    parser.add_argument("--limit", type=int, default=2000, help="Number of rows to load")
+    parser.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
+                       default="balanced", help="Signal frequency preset")
+    parser.add_argument("--max_signals", type=int, default=3, help="Maximum signals per run")
+    parser.add_argument("--color_prob_threshold", type=float, default=0.68, help="Minimum confidence for color signals")
+    parser.add_argument("--min_sources", type=int, default=2, help="Minimum sources for ensemble")
+    parser.add_argument("--enable_alert", action="store_true", help="Enable Telegram alerts")
+    parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
+    parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
+    parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
+    parser.add_argument("--disable_sleep_window", action="store_true", help="Ignore 1:00–9:00 IST quiet hours")
+    parser.add_argument("--min_prob_margin", type=float, default=0.20, help="Require top1-top2 prob margin before alert")
+    parser.add_argument("--max_entropy", type=float, default=0.85, help="Max allowed entropy of probs for alert (lower = stricter)")
+    parser.add_argument("--enable_recent_penalty", action="store_true", help="Penalize threshold if recent accuracy is low")
+    # New: tunable alert gates so we can adjust without code edits
+    parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
+    parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
+    args = parser.parse_args()
     
     print("🚀 WinGo Momentum Analysis System")
     print("=" * 50)
@@ -1282,27 +1225,6 @@ def main():
     print(f"🔧 Fast Mode: {args.fast_mode}")
     print("=" * 50)
     
-    # Propagate fast_mode to ML layer via env so fine-tune can be skipped quickly
-    try:
-        os.environ["WINGO_FAST_MODE"] = "1" if args.fast_mode else "0"
-    except Exception:
-        pass
-
-    # Optional startup alignment sleep to allow the current period to finish
-    if args.align_startup_sleep:
-        now = datetime.utcnow()
-        next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
-        target_start = next_minute + timedelta(seconds=max(0, args.align_offset_seconds))
-        # If we already passed, push one more minute
-        if target_start <= now:
-            target_start = target_start + timedelta(minutes=1)
-        sleep_seconds = int((target_start - now).total_seconds())
-        if sleep_seconds > 0:
-            print(f"⏳ Startup alignment: sleeping {sleep_seconds}s until {target_start.strftime('%H:%M:%S')} UTC")
-            time.sleep(sleep_seconds)
-        else:
-            print("⏳ Startup alignment: no sleep needed")
-
     # Respect sleep window (1:00–9:00 IST) unless disabled
     if not args.disable_sleep_window:
         now_utc = datetime.utcnow()
@@ -1314,19 +1236,9 @@ def main():
     # Load data
     try:
         if args.source == "csv":
-            print(f"📁 Loading data from CSV: {args.csv_path}")
             df = load_csv(args.csv_path)
         else:
-            print("🔗 Connecting to database...")
             cfg = ScraperConfig()
-            
-            # Check if database connection string is available
-            if not hasattr(cfg, 'neon_conn_str') or not cfg.neon_conn_str:
-                print("❌ Error: Database connection string not found!")
-                print("Please set NEON_CONN_STR environment variable")
-                return
-            
-            print(f"📊 Database connection established")
             
             # Adjust timing based on mode
             if args.mid_period_mode:
@@ -1334,20 +1246,13 @@ def main():
                 max_wait = 15       # Allow more time for period completion
                 print("🎯 Mid-period mode enabled - optimized for fresh period data")
             elif args.fast_mode:
-                fresh_seconds = 12  # Faster freshness target
-                max_wait = 0        # No retry in fast mode; proceed immediately
+                fresh_seconds = 15  # Reduced from 20
+                max_wait = 8        # Reduced from 10
                 print("⚡ Fast mode enabled - reduced delays for quicker alerts")
             else:
-                fresh_seconds = 18  # Slightly faster default
-                max_wait = 10       # Slightly shorter default wait
-
-            # Allow explicit overrides from CLI
-            if args.fresh_seconds is not None:
-                fresh_seconds = max(0, int(args.fresh_seconds))
-            if args.max_wait_seconds is not None:
-                max_wait = max(0, int(args.max_wait_seconds))
+                fresh_seconds = 20  # Reduced from 25
+                max_wait = 12       # Reduced from 15
             
-            print(f"📥 Loading {args.limit} rows from database...")
             df = ensure_fresh_neon_data(cfg, args.limit, fresh_seconds, max_wait)
         
         print(f"📊 Loaded {len(df)} rounds of data")
@@ -1363,11 +1268,8 @@ def main():
             print("=" * 50)
         
         # Resolve any pending alert outcomes
-        if not args.fast_mode:
-            print("🔄 Resolving pending alert outcomes...")
-            resolve_unresolved_alerts(cfg.neon_conn_str)
-        else:
-            print("⏭️  Fast mode: skipping resolve_unresolved_alerts to save time")
+        print("🔄 Resolving pending alert outcomes...")
+        resolve_unresolved_alerts(cfg.neon_conn_str)
         
         if len(df) < 100:
             print("❌ Insufficient data for analysis (need at least 100 rounds)")
@@ -1490,9 +1392,7 @@ def main():
                 initial_period = get_next_betting_period(df)
                 
                 # Buffer requirements based on timing mode
-                if args.min_buffer_seconds is not None:
-                    min_buffer = max(0, int(args.min_buffer_seconds))
-                elif args.mid_period_mode:
+                if args.mid_period_mode:
                     min_buffer = 10  # Reduced for mid-period timing
                     print("🎯 Using 10s buffer for mid-period optimization")
                 elif args.fast_mode:
@@ -1516,8 +1416,9 @@ def main():
                 try:
                     if len(betting_period) >= 12:
                         # Parse the period ID to get the target time (UTC minute)
-                        # betting_period already encodes the minute to bet on
                         target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+                        # Actual betting time is the next minute
+                        target_dt = target_dt + timedelta(minutes=1)
                     else:
                         # Fallback: next minute boundary
                         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
@@ -1541,8 +1442,8 @@ def main():
                     print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < {args.eta_min_seconds}s)")
                     return
                 
-                # Quality gate 2: Backtest precision check (reuse precomputed accuracy)
-                backtest_precision = accuracy
+                # Quality gate 2: Backtest precision check
+                backtest_precision = backtest_ml_system(df, lookback=300)
                 if backtest_precision < 0.65:
                     print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.65)")
                     return
@@ -1648,9 +1549,4 @@ def main():
     print(f"   - Max signals: {args.max_signals}")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"❌ Fatal error in main: {e}")
-        import traceback
-        traceback.print_exc()
+    main()
