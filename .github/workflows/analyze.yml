@@ -7,38 +7,50 @@ on:
   workflow_dispatch:
     inputs:
       preset:
-        description: "Preset (conservative|balanced|aggressive|very_aggressive)"
+        description: "Signal frequency preset"
         required: false
-        default: balanced
+        default: 'balanced'
+        type: choice
+        options:
+          - conservative
+          - balanced
+          - aggressive
+          - very_aggressive
       max_signals:
-        description: "Max signals per run"
+        description: "Max signals per analysis run"
         required: false
         default: '3'
-      source:
+      data_source:
         description: "Data source (db|csv)"
         required: false
-        default: db
+        default: 'db'
+        type: choice
+        options:
+          - db
+          - csv
       csv_path:
         description: "CSV path if source=csv"
         required: false
-        default: game_history_rows.csv
-      limit:
-        description: "Rows to load"
+        default: 'game_history_rows.csv'
+      rows_to_load:
+        description: "Rows to load from data source"
         required: false
         default: '2000'
-      fast_mode:
+      enable_fast_mode:
         description: "Enable fast mode"
         required: false
-        default: 'true'
-      recent_penalty:
+        default: true
+        type: boolean
+      enable_recent_performance_penalty:
         description: "Enable recent performance penalty"
         required: false
-        default: 'true'
+        default: true
+        type: boolean
       color_prob_threshold:
         description: "Color prob threshold (balanced preset only)"
         required: false
         default: '0.68'
-      min_prob_margin:
+      min_probability_margin:
         description: "Min probability margin"
         required: false
         default: '0.20'
@@ -46,10 +58,11 @@ on:
         description: "Max entropy"
         required: false
         default: '0.85'
-      disable_sleep_window:
+      ignore_quiet_hours:
         description: "Ignore quiet hours (1-9 AM IST)"
         required: false
-        default: 'false'
+        default: false
+        type: boolean
 
 jobs:
   analyze:
@@ -84,17 +97,17 @@ jobs:
       run: |
         echo "🚀 Starting WinGo Analysis..."
         echo "📊 Configuration:"
-        echo "  - Source: ${{ github.event.inputs.source || 'db' }}"
+        echo "  - Source: ${{ github.event.inputs.data_source || 'db' }}"
         echo "  - CSV Path: ${{ github.event.inputs.csv_path || 'game_history_rows.csv' }}"
-        echo "  - Limit: ${{ github.event.inputs.limit || '2000' }}"
+        echo "  - Limit: ${{ github.event.inputs.rows_to_load || '2000' }}"
         echo "  - Preset: ${{ github.event.inputs.preset || 'balanced' }}"
         echo "  - Max Signals: ${{ github.event.inputs.max_signals || '3' }}"
-        echo "  - Fast Mode: ${{ github.event.inputs.fast_mode || 'true' }}"
-        echo "  - Recent Penalty: ${{ github.event.inputs.recent_penalty || 'true' }}"
+        echo "  - Fast Mode: ${{ github.event.inputs.enable_fast_mode || 'true' }}"
+        echo "  - Recent Penalty: ${{ github.event.inputs.enable_recent_performance_penalty || 'true' }}"
         echo "  - Color Threshold: ${{ github.event.inputs.color_prob_threshold || '0.68' }}"
-        echo "  - Min Prob Margin: ${{ github.event.inputs.min_prob_margin || '0.20' }}"
+        echo "  - Min Prob Margin: ${{ github.event.inputs.min_probability_margin || '0.20' }}"
         echo "  - Max Entropy: ${{ github.event.inputs.max_entropy || '0.85' }}"
-        echo "  - Disable Sleep Window: ${{ github.event.inputs.disable_sleep_window || 'false' }}"
+        echo "  - Ignore Quiet Hours: ${{ github.event.inputs.ignore_quiet_hours || 'false' }}"
         echo "=========================================="
         
         # Check if environment variables are set
@@ -115,19 +128,19 @@ jobs:
         echo "=========================================="
         
         # Build flags from inputs
-        FAST_FLAG=$([[ "${{ github.event.inputs.fast_mode }}" == "false" ]] && echo "" || echo "--fast_mode")
-        PENALTY_FLAG=$([[ "${{ github.event.inputs.recent_penalty }}" == "false" ]] && echo "" || echo "--enable_recent_penalty")
-        SLEEP_FLAG=$([[ "${{ github.event.inputs.disable_sleep_window }}" == "true" ]] && echo "--disable_sleep_window" || echo "")
+        FAST_FLAG=$([[ "${{ github.event.inputs.enable_fast_mode }}" == "false" ]] && echo "" || echo "--fast_mode")
+        PENALTY_FLAG=$([[ "${{ github.event.inputs.enable_recent_performance_penalty }}" == "false" ]] && echo "" || echo "--enable_recent_penalty")
+        SLEEP_FLAG=$([[ "${{ github.event.inputs.ignore_quiet_hours }}" == "true" ]] && echo "--disable_sleep_window" || echo "")
 
         # Run the analyzer with error handling
         python analyze.py \
-          --source "${{ github.event.inputs.source || 'db' }}" \
+          --source "${{ github.event.inputs.data_source || 'db' }}" \
           --csv_path "${{ github.event.inputs.csv_path || 'game_history_rows.csv' }}" \
-          --limit "${{ github.event.inputs.limit || '2000' }}" \
+          --limit "${{ github.event.inputs.rows_to_load || '2000' }}" \
           --preset "${{ github.event.inputs.preset || 'balanced' }}" \
           --max_signals "${{ github.event.inputs.max_signals || '3' }}" \
           --color_prob_threshold "${{ github.event.inputs.color_prob_threshold || '0.68' }}" \
-          --min_prob_margin "${{ github.event.inputs.min_prob_margin || '0.20' }}" \
+          --min_prob_margin "${{ github.event.inputs.min_probability_margin || '0.20' }}" \
           --max_entropy "${{ github.event.inputs.max_entropy || '0.85' }}" \
           $FAST_FLAG $PENALTY_FLAG $SLEEP_FLAG || {
           echo "❌ Analysis failed with exit code $?"
