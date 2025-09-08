@@ -1280,8 +1280,18 @@ def main():
     print(f"⚙️  Preset: {args.preset}")
     print(f"🎯 Max Signals: {args.max_signals}")
     print(f"📈 Confidence Threshold: {args.color_prob_threshold}")
+    # Auto-enable alerts if Telegram credentials are present
+    try:
+        _tg_token_present = bool(os.getenv("TELEGRAM_BOT_TOKEN"))
+        _tg_chat_present = bool(os.getenv("TELEGRAM_CHAT_ID"))
+    except Exception:
+        _tg_token_present = _tg_chat_present = False
+    if not args.enable_alert and _tg_token_present and _tg_chat_present:
+        args.enable_alert = True
+        print("📣 Alerts: ENABLED automatically (Telegram credentials detected)")
+    else:
+        print(f"📣 Alerts: {'ENABLED' if args.enable_alert else 'disabled'}{' (FORCED)' if args.force_alert else ''}")
     print(f"🔧 Fast Mode: {args.fast_mode}")
-    print(f"📣 Alerts: {'ENABLED' if args.enable_alert else 'disabled'}{' (FORCED)' if args.force_alert else ''}")
     print("=" * 50)
     
     # Propagate fast_mode to ML layer via env so fine-tune can be skipped quickly
