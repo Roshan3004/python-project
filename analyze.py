@@ -1224,27 +1224,31 @@ def backtest_ml_system(df: pd.DataFrame, lookback: int = 300) -> float:
         return 0.5
 
 def main():
-    parser = argparse.ArgumentParser(description="WinGo Momentum Analysis System")
-    parser.add_argument("--source", choices=["csv", "db"], default="db", help="Data source")
-    parser.add_argument("--csv_path", default="game_history.csv", help="CSV file path")
-    parser.add_argument("--limit", type=int, default=2000, help="Number of rows to load")
-    parser.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
-                       default="balanced", help="Signal frequency preset")
-    parser.add_argument("--max_signals", type=int, default=3, help="Maximum signals per run")
-    parser.add_argument("--color_prob_threshold", type=float, default=0.68, help="Minimum confidence for color signals")
-    parser.add_argument("--min_sources", type=int, default=2, help="Minimum sources for ensemble")
-    parser.add_argument("--enable_alert", action="store_true", help="Enable Telegram alerts")
-    parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
-    parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
-    parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
-    parser.add_argument("--disable_sleep_window", action="store_true", help="Ignore 1:00–9:00 IST quiet hours")
-    parser.add_argument("--min_prob_margin", type=float, default=0.20, help="Require top1-top2 prob margin before alert")
-    parser.add_argument("--max_entropy", type=float, default=0.85, help="Max allowed entropy of probs for alert (lower = stricter)")
-    parser.add_argument("--enable_recent_penalty", action="store_true", help="Penalize threshold if recent accuracy is low")
-    # New: tunable alert gates so we can adjust without code edits
-    parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
-    parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
-    args = parser.parse_args()
+    try:
+        parser = argparse.ArgumentParser(description="WinGo Momentum Analysis System")
+        parser.add_argument("--source", choices=["csv", "db"], default="db", help="Data source")
+        parser.add_argument("--csv_path", default="game_history.csv", help="CSV file path")
+        parser.add_argument("--limit", type=int, default=2000, help="Number of rows to load")
+        parser.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
+                           default="balanced", help="Signal frequency preset")
+        parser.add_argument("--max_signals", type=int, default=3, help="Maximum signals per run")
+        parser.add_argument("--color_prob_threshold", type=float, default=0.68, help="Minimum confidence for color signals")
+        parser.add_argument("--min_sources", type=int, default=2, help="Minimum sources for ensemble")
+        parser.add_argument("--enable_alert", action="store_true", help="Enable Telegram alerts")
+        parser.add_argument("--log_to_db", action="store_true", help="Log alerts to database")
+        parser.add_argument("--fast_mode", action="store_true", help="Enable fast mode for quicker alerts")
+        parser.add_argument("--mid_period_mode", action="store_true", help="Enable mid-period timing optimization")
+        parser.add_argument("--disable_sleep_window", action="store_true", help="Ignore 1:00–9:00 IST quiet hours")
+        parser.add_argument("--min_prob_margin", type=float, default=0.20, help="Require top1-top2 prob margin before alert")
+        parser.add_argument("--max_entropy", type=float, default=0.85, help="Max allowed entropy of probs for alert (lower = stricter)")
+        parser.add_argument("--enable_recent_penalty", action="store_true", help="Penalize threshold if recent accuracy is low")
+        # New: tunable alert gates so we can adjust without code edits
+        parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
+        parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
+        args = parser.parse_args()
+    except Exception as e:
+        print(f"❌ Error parsing arguments: {e}")
+        return
     
     print("🚀 WinGo Momentum Analysis System")
     print("=" * 50)
@@ -1266,9 +1270,19 @@ def main():
     # Load data
     try:
         if args.source == "csv":
+            print(f"📁 Loading data from CSV: {args.csv_path}")
             df = load_csv(args.csv_path)
         else:
+            print("🔗 Connecting to database...")
             cfg = ScraperConfig()
+            
+            # Check if database connection string is available
+            if not hasattr(cfg, 'neon_conn_str') or not cfg.neon_conn_str:
+                print("❌ Error: Database connection string not found!")
+                print("Please set NEON_CONN_STR environment variable")
+                return
+            
+            print(f"📊 Database connection established")
             
             # Adjust timing based on mode
             if args.mid_period_mode:
@@ -1283,6 +1297,7 @@ def main():
                 fresh_seconds = 20  # Reduced from 25
                 max_wait = 12       # Reduced from 15
             
+            print(f"📥 Loading {args.limit} rows from database...")
             df = ensure_fresh_neon_data(cfg, args.limit, fresh_seconds, max_wait)
         
         print(f"📊 Loaded {len(df)} rounds of data")
@@ -1579,4 +1594,9 @@ def main():
     print(f"   - Max signals: {args.max_signals}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        print(f"❌ Fatal error in main: {e}")
+        import traceback
+        traceback.print_exc()

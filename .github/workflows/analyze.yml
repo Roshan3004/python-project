@@ -37,7 +37,42 @@ jobs:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
-        python analyze.py --source db --fast_mode --preset balanced --max_signals 3 --enable_recent_penalty --min_prob_margin 0.20 --max_entropy 0.85
+        echo "🚀 Starting WinGo Analysis..."
+        echo "📊 Configuration:"
+        echo "  - Source: Database"
+        echo "  - Preset: Balanced"
+        echo "  - Max Signals: 3"
+        echo "  - Fast Mode: Enabled"
+        echo "  - Recent Penalty: Enabled"
+        echo "  - Min Prob Margin: 0.20"
+        echo "  - Max Entropy: 0.85"
+        echo "=========================================="
+        
+        # Check if environment variables are set
+        if [ -z "$NEON_CONN_STR" ]; then
+          echo "❌ Error: NEON_CONN_STR environment variable not set!"
+          exit 1
+        fi
+        
+        if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+          echo "⚠️  Warning: TELEGRAM_BOT_TOKEN not set - alerts will be disabled"
+        fi
+        
+        if [ -z "$TELEGRAM_CHAT_ID" ]; then
+          echo "⚠️  Warning: TELEGRAM_CHAT_ID not set - alerts will be disabled"
+        fi
+        
+        echo "🔗 Environment variables checked"
+        echo "=========================================="
+        
+        # Run the analyzer with error handling
+        python analyze.py --source db --fast_mode --preset balanced --max_signals 3 --enable_recent_penalty --min_prob_margin 0.20 --max_entropy 0.85 || {
+          echo "❌ Analysis failed with exit code $?"
+          exit 1
+        }
+        
+        echo "=========================================="
+        echo "✅ Analysis completed successfully!"
         
     - name: Upload updated model
       uses: actions/upload-artifact@v3
