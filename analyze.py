@@ -672,11 +672,8 @@ def format_betting_alert(signal: dict, betting_period: str, accuracy: float) -> 
     # Calculate time until target round (best-effort based on minute boundary)
     current_time = datetime.utcnow()
     try:
-        # betting_period starts with YYYYMMDDHHMM
-        if len(betting_period) >= 12:
-            target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
-        else:
-            target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+        # Always use next minute boundary for clarity in alerts
+        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     except Exception:
         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     seconds_until = max(0, int((target_dt - current_time).total_seconds()))
@@ -705,7 +702,8 @@ def ensure_min_time_buffer(df: pd.DataFrame, betting_period: str, min_buffer_sec
     now_utc = datetime.utcnow()
     try:
         if len(betting_period) >= 12 and betting_period[:12].isdigit():
-            target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
+            # Use next minute boundary for betting buffer logic
+            target_dt = (now_utc.replace(second=0, microsecond=0) + timedelta(minutes=1))
             seconds_until = (target_dt - now_utc).total_seconds()
             
             # If less than buffer time, push to next period only
@@ -1532,15 +1530,9 @@ def main():
                 
                 # Calculate ETA more accurately
                 try:
-                    if len(betting_period) >= 12:
-                        # Parse the period ID to get the target time (UTC minute)
-                        # betting_period already encodes the minute to bet on
-                        target_dt = datetime.strptime(betting_period[:12], "%Y%m%d%H%M")
-                    else:
-                        # Fallback: next minute boundary
-                        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+                    # Always target next minute boundary for sending window
+                    target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
                 except Exception:
-                    # Fallback: next minute boundary
                     target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
 
                 # Guard: ensure target time is in the future
