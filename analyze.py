@@ -1258,6 +1258,7 @@ def main():
         parser.add_argument("--min_prob_margin", type=float, default=0.20, help="Require top1-top2 prob margin before alert")
         parser.add_argument("--max_entropy", type=float, default=0.85, help="Max allowed entropy of probs for alert (lower = stricter)")
         parser.add_argument("--enable_recent_penalty", action="store_true", help="Penalize threshold if recent accuracy is low")
+        parser.add_argument("--force_alert", action="store_true", help="Force send top signal (bypass method/threshold gates)")
         # New: tunable alert gates so we can adjust without code edits
         parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
         parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
@@ -1280,6 +1281,7 @@ def main():
     print(f"🎯 Max Signals: {args.max_signals}")
     print(f"📈 Confidence Threshold: {args.color_prob_threshold}")
     print(f"🔧 Fast Mode: {args.fast_mode}")
+    print(f"📣 Alerts: {'ENABLED' if args.enable_alert else 'disabled'}{' (FORCED)' if args.force_alert else ''}")
     print("=" * 50)
     
     # Propagate fast_mode to ML layer via env so fine-tune can be skipped quickly
@@ -1429,9 +1431,12 @@ def main():
         print(f"Limited to top {max_signals} signals by confidence")
     
     if not signals:
-        print("No strong signals detected with current threshold.")
-        print("Consider using --preset aggressive or --preset very_aggressive for more signals.")
-        return
+        if args.force_alert:
+            print("⚠️  No signals passed gates, but --force_alert is set. Attempting to send top candidate if any...")
+        else:
+            print("No strong signals detected with current threshold.")
+            print("Consider using --preset aggressive or --preset very_aggressive for more signals.")
+            return
 
     # Display signals
     print(f"\n🎯 Strong Signals Detected: {len(signals)}")
@@ -1456,6 +1461,9 @@ def main():
     # Send alerts for strong signals
     if args.enable_alert and signals:
         cfg = ScraperConfig()
+        if not cfg.telegram_bot_token or not cfg.telegram_chat_id:
+            print("❌ Telegram credentials missing (bot token or chat id). Cannot send alerts.")
+            return
         
         # Determine the correct threshold for alerts
         if args.preset != "balanced":
@@ -1485,7 +1493,7 @@ def main():
             # Only alert if: Ensemble OR exceptionally strong single-method (>=0.72)
             is_ensemble = (best_signal.get("method") == "Ensemble")
             exceptionally_strong = (best_signal["confidence"] >= 0.75)
-            if is_ensemble or exceptionally_strong:
+            if is_ensemble or exceptionally_strong or args.force_alert:
                 # Calculate the NEXT period ID for betting and ensure a safe buffer
                 initial_period = get_next_betting_period(df)
                 
@@ -1586,6 +1594,7 @@ def main():
                 sent_alerts.add(alert_key)
                 
                 # Send Telegram alert
+                print("📣 Telegram sendMessage: attempting...")
                 ok = send_telegram(cfg, msg)
                 if best_signal["type"] == "color":
                     print(f"Alert sent for {best_signal['color']}: {ok}")
