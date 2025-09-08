@@ -1282,6 +1282,12 @@ def main():
     print(f"🔧 Fast Mode: {args.fast_mode}")
     print("=" * 50)
     
+    # Propagate fast_mode to ML layer via env so fine-tune can be skipped quickly
+    try:
+        os.environ["WINGO_FAST_MODE"] = "1" if args.fast_mode else "0"
+    except Exception:
+        pass
+
     # Optional startup alignment sleep to allow the current period to finish
     if args.align_startup_sleep:
         now = datetime.utcnow()
@@ -1532,8 +1538,8 @@ def main():
                     print(f"❌ Skipping alert: ETA too low ({eta_seconds}s < {args.eta_min_seconds}s)")
                     return
                 
-                # Quality gate 2: Backtest precision check
-                backtest_precision = backtest_ml_system(df, lookback=300)
+                # Quality gate 2: Backtest precision check (reuse precomputed accuracy)
+                backtest_precision = accuracy
                 if backtest_precision < 0.65:
                     print(f"❌ Skipping alert: Backtest precision too low ({backtest_precision:.3f} < 0.65)")
                     return
