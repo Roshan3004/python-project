@@ -1,0 +1,46 @@
+name: Weekly Model Training
+
+on:
+  schedule:
+    # Run every Sunday at 00:00 UTC (5:30 AM IST)
+    - cron: '0 0 * * 0'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  train-model:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Train model
+      env:
+        NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
+      run: |
+        python train_model.py --progressive --validate --model_dir models
+        
+    - name: Upload model artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: trained-model
+        path: models/
+        retention-days: 30
+        
+    - name: Commit and push model updates
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add models/
+        git diff --staged --quiet || git commit -m "Update trained model - $(date)"
+        git push

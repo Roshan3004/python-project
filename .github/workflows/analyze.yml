@@ -1,99 +1,47 @@
-name: Analyze WinGo
+name: WinGo Analysis
 
 on:
-  workflow_dispatch:
-    inputs:
-      limit:
-        description: "Rows to load from Neon"
-        required: false
-        default: "2000"
-      preset:
-        description: "Signal frequency preset"
-        required: false
-        default: "balanced"
-        type: choice
-        options:
-          - conservative
-          - balanced
-          - aggressive
-          - very_aggressive
-      max_signals:
-        description: "Max signals per analysis run"
-        required: false
-        default: "5"
-        type: number
-  # Run strictly every 10 minutes (UTC). We will skip during 01:00–09:00 IST at runtime.
   schedule:
-    - cron: "*/10 * * * *"   # :00, :10, :20, :30, :40, :50
-    - cron: "5-59/10 * * * *" # :05, :15, :25, :35, :45, :55 (reliability hedge)
-
-concurrency:
-  group: analyze-wingo
-  cancel-in-progress: true
+    # Run every 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Allow manual trigger
 
 jobs:
-  run-analyzer:
+  analyze:
     runs-on: ubuntu-latest
+    
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements.txt
-
-      - name: Skip during sleep window (01:00–09:00 IST)
-        run: |
-          ist=$(TZ=Asia/Kolkata date +%H)
-          if [ $ist -ge 1 ] && [ $ist -lt 9 ]; then
-            echo "⏭️  Inside sleep window (IST 01:00–09:00). Skipping run."
-            exit 0
-          fi
-
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Fresh data guarantee timing (1m11s post-period)
-        run: |
-          echo "🕐 Calculating timing to guarantee fresh period data..."
-          current_second=$(date +%S)
-          target_seconds=71  # 1m11s to ensure period completion + scraping
-          
-          if [ $current_second -le $target_seconds ]; then
-            sleep_time=$((target_seconds - current_second))
-          else
-            sleep_time=$((60 + target_seconds - current_second))
-          fi
-          
-          echo "⏱  Sleeping ${sleep_time}s to guarantee fresh data (target: ${target_seconds}s)..."
-          sleep $sleep_time
-          echo "✅ Fresh data timing reached - period guaranteed complete ($(date +%S)s)"
-
-      - name: Run momentum analysis (optimized timing)
-        env:
-          NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          PRESET: ${{ github.event.inputs.preset || 'balanced' }}
-          MAX_SIGNALS: ${{ github.event.inputs.max_signals || 3 }}
-          MIN_SOURCES: ${{ github.event.inputs.min_sources || 2 }}
-          COLOR_PROB: ${{ github.event.inputs.color_prob_threshold || 0.68 }}
-          LIMIT: ${{ github.event.inputs.limit || 2000 }}
-        run: |
-          echo "🚀 Starting WinGo Momentum Analysis (Mid-period optimized)"
-          python analyze.py \
-            --source db \
-            --preset $PRESET \
-            --max_signals $MAX_SIGNALS \
-            --min_sources $MIN_SOURCES \
-            --color_prob_threshold $COLOR_PROB \
-            --limit $LIMIT \
-            --enable_alert \
-            --log_to_db \
-            --fast_mode \
-            --mid_period_mode \
-            --eta_min_seconds 10 \
-            --violet_max_share 0.30
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Download latest model
+      uses: actions/download-artifact@v3
+      with:
+        name: trained-model
+        path: models/
+      continue-on-error: true # Don't fail if no model exists yet
+      
+    - name: Run analysis
+      env:
+        NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python analyze.py --source db --fast_mode --preset balanced --max_signals 3 --enable_recent_penalty --min_prob_margin 0.20 --max_entropy 0.85
+        
+    - name: Upload updated model
+      uses: actions/upload-artifact@v3
+      with:
+        name: trained-model
+        path: models/
+        retention-days: 7

@@ -1,0 +1,24 @@
+{
+  "accuracy": 0.40789473684210525,
+  "training_samples": 1520,
+  "validation_samples": 380,
+  "feature_count": 36,
+  "model_params": {
+    "n_estimators": 300,
+    "max_depth": 8,
+    "learning_rate": 0.05
+  },
+  "trained_at": "2025-09-08T05:28:40.363862",
+  "data_period": {
+    "start": "2025-09-07T05:28:32.042026",
+    "end": "2025-09-08T14:47:32.042026",
+    "total_rows": 2000
+  },
+  "progressive_scaling": {
+    "enabled": true,
+    "current_week": 37,
+    "data_limit": 2000,
+    "target_limit": 80000,
+    "progress_percent": 2.5
+  }
+}

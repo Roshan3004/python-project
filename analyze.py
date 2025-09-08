@@ -9,6 +9,8 @@ from lightgbm import LGBMClassifier
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
+import pickle
+from pathlib import Path
 from db import MongoStore
 from strategy import suggest_next, suggest_from_ensemble
 from config import ScraperConfig
@@ -19,6 +21,172 @@ from momentum_config import (
     get_max_signals_per_run,
     get_preset_config
 )
+
+# ====== MODEL PERSISTENCE FUNCTIONS ======
+def load_saved_model(model_path: str = "models/lightgbm_model.pkl") -> Optional[LGBMClassifier]:
+    """Load saved model with fallback handling"""
+    try:
+        if os.path.exists(model_path):
+            with open(model_path, 'rb') as f:
+                model = pickle.load(f)
+            print(f"✅ Loaded saved model from {model_path}")
+            return model
+    except Exception as e:
+        print(f"⚠️ Failed to load saved model: {e}")
+    return None
+
+def save_model(model: LGBMClassifier, model_path: str = "models/lightgbm_model.pkl") -> bool:
+    """Save model with directory creation"""
+    try:
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        with open(model_path, 'wb') as f:
+            pickle.dump(model, f)
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to save model: {e}")
+        return False
+
+def validate_model_on_recent_data(model: LGBMClassifier, df: pd.DataFrame, recent_rows: int = 200) -> float:
+    """Quick validation of model on recent data"""
+    try:
+        if len(df) < recent_rows + 50:
+            return 0.5  # Default if insufficient data
+        
+        recent_df = df.tail(recent_rows)
+        X, y = build_ml_features(recent_df, is_training=True)
+        
+        if len(X) < 20:
+            return 0.5
+        
+        y_pred = model.predict(X)
+        accuracy = accuracy_score(y, y_pred)
+        return float(accuracy)
+    except Exception:
+        return 0.5
+
+def build_ml_features(df: pd.DataFrame, is_training: bool = True) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Build ML features (extracted from analyze_with_ml_model for reuse)"""
+    features_list = []
+    targets = [] if is_training else None
+    
+    # Use appropriate data size
+    max_rows = 1000 if not is_training else min(800, len(df))
+    train_data = df.tail(max_rows).copy()
+    
+    if is_training:
+        max_samples = min(300, len(train_data) - 50)
+        start_idx = max(50, len(train_data) - max_samples - 50)
+    else:
+        max_samples = min(200, len(train_data) - 30)
+        start_idx = max(30, len(train_data) - max_samples - 30)
+    
+    for i in range(start_idx, len(train_data)):
+        features = []
+        
+        # Time features
+        try:
+            timestamp = pd.to_datetime(train_data.iloc[i]["scraped_at"])
+            features.extend([timestamp.hour, timestamp.minute, timestamp.weekday()])
+        except Exception:
+            features.extend([12, 0, 0])
+        
+        # Historical color features (1, 2, 3 rounds ago)
+        for lag in [1, 2, 3]:
+            if i - lag >= 0:
+                color = train_data.iloc[i - lag]["color"]
+                features.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0))
+            else:
+                features.append(0)
+        
+        # Frequency features (last 10, 30, 50)
+        for window in [10, 30, 50]:
+            if i >= window:
+                window_data = train_data.iloc[i - window:i]
+                red_freq = (window_data["color"] == "RED").sum() / window
+                green_freq = (window_data["color"] == "GREEN").sum() / window
+                violet_freq = (window_data["color"] == "VIOLET").sum() / window
+                features.extend([red_freq, green_freq, violet_freq])
+            else:
+                features.extend([0.33, 0.33, 0.34])
+        
+        # Current streak based on previous color
+        if i - 1 >= 0:
+            current_color = train_data.iloc[i - 1]["color"]
+            streak = 1
+            for j in range(i - 2, max(0, i - 10), -1):
+                if train_data.iloc[j]["color"] == current_color:
+                    streak += 1
+                else:
+                    break
+            features.append(min(streak, 10))
+        else:
+            features.append(1)
+        
+        # Number patterns (last 20)
+        if i >= 20:
+            recent_numbers = train_data.iloc[i - 20:i]["number"].astype(int).tolist()
+            for num in range(10):
+                features.append(recent_numbers.count(num) / 20)
+            features.append(max(recent_numbers))
+            features.append(min(recent_numbers))
+            features.append(float(np.mean(recent_numbers)))
+            features.append(float(np.std(recent_numbers)))
+        else:
+            features.extend([0.1] * 10)
+            features.extend([5, 0, 5, 0])
+        
+        # Number volatility std over last 15 and 45
+        for vol_window in [15, 45]:
+            if i >= vol_window:
+                nums_win = train_data.iloc[i - vol_window:i]["number"].astype(int).values
+                features.append(float(np.std(nums_win)))
+            else:
+                features.append(0.0)
+        
+        # Time since last VIOLET
+        lookback_slice = train_data.iloc[:i]
+        last_violet_idx = None
+        if len(lookback_slice) > 0:
+            violet_positions = np.where(lookback_slice["color"].values == "VIOLET")[0]
+            if violet_positions.size > 0:
+                last_violet_idx = int(violet_positions[-1])
+        if last_violet_idx is not None:
+            features.append(float(i - last_violet_idx))
+        else:
+            features.append(float(min(i, 100)))
+        
+        # Markov BIG probability from analyze_big_small
+        try:
+            if i >= 20:
+                temp_df = train_data.iloc[max(0, i - 60):i][["number", "color"]].copy()
+                temp_df["number"] = temp_df["number"].astype(int)
+                size_probs, _, _ = analyze_big_small(temp_df, lookback=min(60, len(temp_df)))
+                features.append(float(size_probs.get("BIG", 0.5)))
+            else:
+                features.append(0.5)
+        except Exception:
+            features.append(0.5)
+        
+        # Lag numbers 1 and 2
+        for lag in [1, 2]:
+            if i - lag >= 0:
+                try:
+                    features.append(int(train_data.iloc[i - lag]["number"]))
+                except Exception:
+                    features.append(0)
+            else:
+                features.append(0)
+        
+        # Target for training
+        if is_training:
+            target_color = train_data.iloc[i]["color"]
+            targets.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(target_color, 0))
+        
+        features_list.append(features)
+    
+    X = np.array(features_list)
+    y = np.array(targets) if is_training else None
+    return X, y
 
 # ====== Helpers for size (Big/Small) ======
 def number_to_size(n: int) -> str:
@@ -579,8 +747,8 @@ def summarize_flags(flags: Dict[str,bool]) -> Tuple[bool, str]:
 
 def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[str, float]:
     """
-    Use LightGBM to predict next round color with advanced features.
-
+    Hybrid ML approach: Load saved model + fine-tune with recent data
+    
     Features:
     - Time of day (hour, minute, weekday)
     - Colors from 1, 2, 3 rounds ago (encoded)
@@ -597,231 +765,93 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
 
     try:
-        features_list = []
-        targets = []
-
-        train_data = df.tail(min(800, len(df))).copy()
-        max_samples = min(300, len(train_data) - 50)
-        start_idx = max(50, len(train_data) - max_samples - 50)
-
-        for i in range(start_idx, len(train_data)):
-            features = []
-
-            # Time features
-            try:
-                timestamp = pd.to_datetime(train_data.iloc[i]["scraped_at"])
-                features.extend([timestamp.hour, timestamp.minute, timestamp.weekday()])
-            except Exception:
-                features.extend([12, 0, 0])
-
-            # Historical color features (1, 2, 3 rounds ago)
-            for lag in [1, 2, 3]:
-                if i - lag >= 0:
-                    color = train_data.iloc[i - lag]["color"]
-                    features.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0))
-                else:
-                    features.append(0)
-
-            # Frequency features (last 10, 30, 50)
-            for window in [10, 30, 50]:
-                if i >= window:
-                    window_data = train_data.iloc[i - window:i]
-                    red_freq = (window_data["color"] == "RED").sum() / window
-                    green_freq = (window_data["color"] == "GREEN").sum() / window
-                    violet_freq = (window_data["color"] == "VIOLET").sum() / window
-                    features.extend([red_freq, green_freq, violet_freq])
-                else:
-                    features.extend([0.33, 0.33, 0.34])
-
-            # Current streak based on previous color
-            if i - 1 >= 0:
-                current_color = train_data.iloc[i - 1]["color"]
-                streak = 1
-                for j in range(i - 2, max(0, i - 10), -1):
-                    if train_data.iloc[j]["color"] == current_color:
-                        streak += 1
-                    else:
-                        break
-                features.append(min(streak, 10))
+        # Try to load saved model first
+        saved_model = load_saved_model()
+        use_saved_model = saved_model is not None
+        
+        if use_saved_model:
+            # Validate saved model on recent data
+            recent_accuracy = validate_model_on_recent_data(saved_model, df, recent_rows=200)
+            print(f"🔍 Saved model recent accuracy: {recent_accuracy:.3f}")
+            
+            # If saved model performs poorly, fall back to training from scratch
+            if recent_accuracy < 0.45:
+                print("⚠️  Saved model performance poor, training from scratch")
+                use_saved_model = False
+                saved_model = None
+        
+        if use_saved_model:
+            # Use saved model as base, fine-tune with recent data
+            print("🔄 Fine-tuning saved model with recent data...")
+            model = saved_model
+            
+            # Fine-tune with recent data (last 500-1000 rows)
+            X_recent, y_recent = build_ml_features(df, is_training=True)
+            
+            if len(X_recent) >= 50:  # Minimum for fine-tuning
+                # Fine-tune with lower learning rate
+                model.fit(X_recent, y_recent, 
+                         eval_set=[(X_recent, y_recent)],
+                         callbacks=[LGBMClassifier.early_stopping(10, verbose=False)])
+                print(f"✅ Fine-tuned model on {len(X_recent)} recent samples")
             else:
-                features.append(1)
-
-            # Number patterns (last 20)
-            if i >= 20:
-                recent_numbers = train_data.iloc[i - 20:i]["number"].astype(int).tolist()
-                for num in range(10):
-                    features.append(recent_numbers.count(num) / 20)
-                features.append(max(recent_numbers))
-                features.append(min(recent_numbers))
-                features.append(float(np.mean(recent_numbers)))
-                features.append(float(np.std(recent_numbers)))
-            else:
-                features.extend([0.1] * 10)
-                features.extend([5, 0, 5, 0])
-
-            # Number volatility std over last 15 and 45
-            for vol_window in [15, 45]:
-                if i >= vol_window:
-                    nums_win = train_data.iloc[i - vol_window:i]["number"].astype(int).values
-                    features.append(float(np.std(nums_win)))
-                else:
-                    features.append(0.0)
-
-            # Time since last VIOLET
-            lookback_slice = train_data.iloc[:i]
-            last_violet_idx = None
-            if len(lookback_slice) > 0:
-                violet_positions = np.where(lookback_slice["color"].values == "VIOLET")[0]
-                if violet_positions.size > 0:
-                    last_violet_idx = int(violet_positions[-1])
-            if last_violet_idx is not None:
-                features.append(float(i - last_violet_idx))
-            else:
-                features.append(float(min(i, 100)))
-
-            # Markov BIG probability from analyze_big_small
-            try:
-                if i >= 20:
-                    temp_df = train_data.iloc[max(0, i - 60):i][["number", "color"]].copy()
-                    temp_df["number"] = temp_df["number"].astype(int)
-                    size_probs, _, _ = analyze_big_small(temp_df, lookback=min(60, len(temp_df)))
-                    features.append(float(size_probs.get("BIG", 0.5)))
-                else:
-                    features.append(0.5)
-            except Exception:
-                features.append(0.5)
-
-            # Lag numbers 1 and 2
-            for lag in [1, 2]:
-                if i - lag >= 0:
-                    try:
-                        features.append(int(train_data.iloc[i - lag]["number"]))
-                    except Exception:
-                        features.append(0)
-                else:
-                    features.append(0)
-
-            # Target
-            target_color = train_data.iloc[i]["color"]
-            targets.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(target_color, 0))
-            features_list.append(features)
-
-        if len(features_list) < 100:
-            print("⚠️  Not enough training samples for ML model")
-            return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-
-        X = np.array(features_list)
-        y = np.array(targets)
-        X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
-
-        model = LGBMClassifier(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.07,
-            random_state=42,
-            verbose=-1,
-            class_weight='balanced',
-            subsample=0.8,
-            colsample_bytree=0.8
-        )
-        model.fit(X_train, y_train)
-
-        y_pred = model.predict(X_val)
-        accuracy = accuracy_score(y_val, y_pred)
-        print(f"🤖 ML Model Accuracy: {accuracy:.3f}")
+                print("⚠️  Insufficient recent data for fine-tuning, using saved model as-is")
+        else:
+            # Train from scratch (fallback)
+            print("🏋️ Training new model from scratch...")
+            X, y = build_ml_features(df, is_training=True)
+            
+            if len(X) < 100:
+                print("⚠️  Not enough training samples for ML model")
+                return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+            
+            X_train, X_val, y_train, y_val = train_test_split(
+                X, y, test_size=0.2, random_state=42, stratify=y
+            )
+            
+            model = LGBMClassifier(
+                n_estimators=200,
+                max_depth=6,
+                learning_rate=0.07,
+                random_state=42,
+                verbose=-1,
+                class_weight='balanced',
+                subsample=0.8,
+                colsample_bytree=0.8
+            )
+            model.fit(X_train, y_train)
+            
+            y_pred = model.predict(X_val)
+            accuracy = accuracy_score(y_val, y_pred)
+            print(f"🤖 New Model Accuracy: {accuracy:.3f}")
 
         # Build current features for prediction
-        current_features = []
-        try:
-            current_time = datetime.utcnow()
-            current_features.extend([current_time.hour, current_time.minute, current_time.weekday()])
-        except Exception:
-            current_features.extend([12, 0, 0])
-
-        for lag in [1, 2, 3]:
-            if len(df) >= lag:
-                color = df.iloc[-lag]["color"]
-                current_features.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0))
-            else:
-                current_features.append(0)
-
-        for window in [10, 30, 50]:
-            if len(df) >= window:
-                window_data = df.tail(window)
-                red_freq = (window_data["color"] == "RED").sum() / window
-                green_freq = (window_data["color"] == "GREEN").sum() / window
-                violet_freq = (window_data["color"] == "VIOLET").sum() / window
-                current_features.extend([red_freq, green_freq, violet_freq])
-            else:
-                current_features.extend([0.33, 0.33, 0.34])
-
-        if len(df) >= 2:
-            current_color = df.iloc[-1]["color"]
-            streak = 1
-            for k in range(len(df) - 2, max(0, len(df) - 10), -1):
-                if df.iloc[k]["color"] == current_color:
-                    streak += 1
-                else:
-                    break
-            current_features.append(min(streak, 10))
-        else:
-            current_features.append(1)
-
-        if len(df) >= 20:
-            recent_numbers = df.tail(20)["number"].astype(int).tolist()
-            for num in range(10):
-                current_features.append(recent_numbers.count(num) / 20)
-            current_features.append(max(recent_numbers))
-            current_features.append(min(recent_numbers))
-            current_features.append(float(np.mean(recent_numbers)))
-            current_features.append(float(np.std(recent_numbers)))
-        else:
-            current_features.extend([0.1] * 10)
-            current_features.extend([5, 0, 5, 0])
-
-        for vol_window in [15, 45]:
-            if len(df) >= vol_window:
-                nums_win = df.tail(vol_window)["number"].astype(int).values
-                current_features.append(float(np.std(nums_win)))
-            else:
-                current_features.append(0.0)
-
-        last_violet_pos = None
-        if len(df) > 0:
-            violet_positions = np.where(df["color"].values == "VIOLET")[0]
-            if violet_positions.size > 0:
-                last_violet_pos = int(violet_positions[-1])
-        if last_violet_pos is not None:
-            current_features.append(float(len(df) - 1 - last_violet_pos))
-        else:
-            current_features.append(float(min(len(df), 100)))
-
-        try:
-            temp_df = df.tail(min(60, len(df)))[["number", "color"]].copy()
-            if len(temp_df) >= 20:
-                temp_df["number"] = temp_df["number"].astype(int)
-                size_probs, _, _ = analyze_big_small(temp_df, lookback=min(60, len(temp_df)))
-                current_features.append(float(size_probs.get("BIG", 0.5)))
-            else:
-                current_features.append(0.5)
-        except Exception:
-            current_features.append(0.5)
-
-        for lag in [1, 2]:
-            if len(df) >= lag:
-                try:
-                    current_features.append(int(df.iloc[-lag]["number"]))
-                except Exception:
-                    current_features.append(0)
-            else:
-                current_features.append(0)
-
-        X_current = np.array([current_features])
+        X_current, _ = build_ml_features(df, is_training=False)
+        
+        if len(X_current) == 0:
+            print("⚠️  No features for prediction")
+            return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
+        
+        # Make prediction
         probabilities = model.predict_proba(X_current)[0]
         color_probs = {"RED": probabilities[0], "GREEN": probabilities[1], "VIOLET": probabilities[2]}
         print(f"🤖 ML Prediction: R={color_probs['RED']:.3f}, G={color_probs['GREEN']:.3f}, V={color_probs['VIOLET']:.3f}")
+        
+        # Save updated model (if fine-tuned or newly trained)
+        if not use_saved_model or len(X_recent) >= 50:
+            save_model(model)
+            print("💾 Model saved for next run")
+            
+            # Log progressive scaling info if available
+            try:
+                from train_model import get_current_week_number
+                current_week = get_current_week_number()
+                current_limit = min(23000 + (current_week * 10000), 80000)
+                progress = min(100, (current_limit / 80000) * 100)
+                print(f"📈 Progressive scaling: Week {current_week}, {current_limit:,} rows ({progress:.1f}% to 80k target)")
+            except Exception:
+                pass
+        
         return color_probs
 
     except Exception as e:
