@@ -1,0 +1,84 @@
+name: WinGo Analysis
+
+on:
+  schedule:
+    # Run every 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Download latest model
+      uses: actions/download-artifact@v4
+      with:
+        name: trained-model
+        path: models/
+        merge-multiple: true
+      continue-on-error: true # Don't fail if no model exists yet
+      
+    - name: Run analysis
+      env:
+        NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        echo "🚀 Starting WinGo Analysis..."
+        echo "📊 Configuration:"
+        echo "  - Source: Database"
+        echo "  - Preset: Balanced"
+        echo "  - Max Signals: 3"
+        echo "  - Fast Mode: Enabled"
+        echo "  - Recent Penalty: Enabled"
+        echo "  - Min Prob Margin: 0.20"
+        echo "  - Max Entropy: 0.85"
+        echo "=========================================="
+        
+        # Check if environment variables are set
+        if [ -z "$NEON_CONN_STR" ]; then
+          echo "❌ Error: NEON_CONN_STR environment variable not set!"
+          exit 1
+        fi
+        
+        if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+          echo "⚠️  Warning: TELEGRAM_BOT_TOKEN not set - alerts will be disabled"
+        fi
+        
+        if [ -z "$TELEGRAM_CHAT_ID" ]; then
+          echo "⚠️  Warning: TELEGRAM_CHAT_ID not set - alerts will be disabled"
+        fi
+        
+        echo "🔗 Environment variables checked"
+        echo "=========================================="
+        
+        # Run the analyzer with error handling
+        python analyze.py --source db --fast_mode --preset balanced --max_signals 3 --enable_recent_penalty --min_prob_margin 0.20 --max_entropy 0.85 || {
+          echo "❌ Analysis failed with exit code $?"
+          exit 1
+        }
+        
+        echo "=========================================="
+        echo "✅ Analysis completed successfully!"
+        
+    - name: Upload updated model
+      uses: actions/upload-artifact@v4
+      with:
+        name: trained-model
+        path: models/
+        retention-days: 7
+        if-no-files-found: ignore
