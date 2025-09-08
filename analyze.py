@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import chisquare
 import requests
-from lightgbm import LGBMClassifier
+from lightgbm import LGBMClassifier, early_stopping
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
@@ -790,9 +790,12 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
             
             if len(X_recent) >= 50:  # Minimum for fine-tuning
                 # Fine-tune with lower learning rate
-                model.fit(X_recent, y_recent, 
-                         eval_set=[(X_recent, y_recent)],
-                         callbacks=[LGBMClassifier.early_stopping(10, verbose=False)])
+                model.fit(
+                    X_recent,
+                    y_recent,
+                    eval_set=[(X_recent, y_recent)],
+                    callbacks=[early_stopping(stopping_rounds=10)]
+                )
                 print(f"✅ Fine-tuned model on {len(X_recent)} recent samples")
             else:
                 print("⚠️  Insufficient recent data for fine-tuning, using saved model as-is")
