@@ -103,8 +103,13 @@ jobs:
           echo "⚠️ Target already passed; proceeding without extra wait"
         fi
         
-        # Build flags from inputs
+        # Build flags from inputs and set fast-mode env for app logic
         FAST_FLAG=$([[ "${{ github.event.inputs.enable_fast_mode }}" == "false" ]] && echo "" || echo "--fast_mode")
+        if [[ "${{ github.event.inputs.enable_fast_mode }}" == "false" ]]; then
+          export WINGO_FAST_MODE=0
+        else
+          export WINGO_FAST_MODE=1
+        fi
         SLEEP_FLAG=$([[ "${{ github.event.inputs.ignore_quiet_hours }}" == "true" ]] && echo "--disable_sleep_window" || echo "")
 
         # Run the analyzer with error handling

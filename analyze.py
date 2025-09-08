@@ -21,6 +21,7 @@ from momentum_config import (
     get_max_signals_per_run,
     get_preset_config
 )
+from sqlalchemy import create_engine
 
 # ====== MODEL PERSISTENCE FUNCTIONS ======
 def load_saved_model(model_path: str = "models/lightgbm_model.pkl") -> Optional[LGBMClassifier]:
@@ -315,17 +316,21 @@ def load_csv(path: str) -> pd.DataFrame:
     return df
 
 def load_neon(conn_str: str, limit: int = 1500) -> pd.DataFrame:
-    """Load data directly from Neon PostgreSQL"""
-    import psycopg2
+    """Load data directly from Neon PostgreSQL using SQLAlchemy engine for speed/stability"""
     query = f"""
-    SELECT period_id, number, color, scraped_at 
-    FROM game_history 
-    ORDER BY scraped_at DESC 
+    SELECT period_id, number, color, scraped_at
+    FROM game_history
+    ORDER BY scraped_at DESC
     LIMIT {limit}
     """
-    conn = psycopg2.connect(conn_str)
-    df = pd.read_sql(query, conn)
-    conn.close()
+    engine = create_engine(conn_str)
+    try:
+        df = pd.read_sql(query, engine)
+    finally:
+        try:
+            engine.dispose()
+        except Exception:
+            pass
     return df.sort_values("period_id")
 
 def ensure_fresh_neon_data(cfg: ScraperConfig, limit: int, fresh_seconds: int = 20, max_wait_seconds: int = 12) -> pd.DataFrame:
@@ -781,27 +786,32 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
                 saved_model = None
         
         if use_saved_model:
-            # Use saved model as base, fine-tune with recent data
-            print("🔄 Fine-tuning saved model with recent data...")
+            # Respect fast mode: skip fine-tuning to reduce latency
+            fast_mode = os.getenv("WINGO_FAST_MODE", "0") == "1"
             model = saved_model
-            
-            # Fine-tune with recent data (last 500-1000 rows)
-            X_recent, y_recent = build_ml_features(df, is_training=True)
-            
-            if len(X_recent) >= 80:  # Minimum for fine-tuning with a small val split
-                # Create a small validation split to enable early stopping
-                Xr_tr, Xr_val, yr_tr, yr_val = train_test_split(
-                    X_recent, y_recent, test_size=0.2, random_state=42, stratify=y_recent
-                )
-                model.fit(
-                    Xr_tr,
-                    yr_tr,
-                    eval_set=[(Xr_val, yr_val)],
-                    callbacks=[early_stopping(stopping_rounds=10)]
-                )
-                print(f"✅ Fine-tuned model on {len(X_recent)} recent samples")
+            if fast_mode:
+                print("⚡ Fast mode: skipping fine-tune to reduce latency")
             else:
-                print("⚠️  Insufficient recent data for fine-tuning, using saved model as-is")
+                # Use saved model as base, fine-tune with recent data
+                print("🔄 Fine-tuning saved model with recent data...")
+                
+                # Fine-tune with recent data (last 500-1000 rows)
+                X_recent, y_recent = build_ml_features(df, is_training=True)
+                
+                if len(X_recent) >= 80:  # Minimum for fine-tuning with a small val split
+                    # Create a small validation split to enable early stopping
+                    Xr_tr, Xr_val, yr_tr, yr_val = train_test_split(
+                        X_recent, y_recent, test_size=0.2, random_state=42, stratify=y_recent
+                    )
+                    model.fit(
+                        Xr_tr,
+                        yr_tr,
+                        eval_set=[(Xr_val, yr_val)],
+                        callbacks=[early_stopping(stopping_rounds=10)]
+                    )
+                    print(f"✅ Fine-tuned model on {len(X_recent)} recent samples")
+                else:
+                    print("⚠️  Insufficient recent data for fine-tuning, using saved model as-is")
         else:
             # Train from scratch (fallback)
             print("🏋️ Training new model from scratch...")
@@ -844,7 +854,7 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
         print(f"🤖 ML Prediction: R={color_probs['RED']:.3f}, G={color_probs['GREEN']:.3f}, V={color_probs['VIOLET']:.3f}")
         
         # Save updated model (if fine-tuned or newly trained)
-        if not use_saved_model or len(X_recent) >= 50:
+        if not use_saved_model or (not os.getenv("WINGO_FAST_MODE", "0") == "1" and 'X_recent' in locals() and len(X_recent) >= 50):
             save_model(model)
             print("💾 Model saved for next run")
             
