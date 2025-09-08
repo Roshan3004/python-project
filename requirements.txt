@@ -7,3 +7,4 @@ numpy==1.26.4
 psycopg2-binary==2.9.9
 lightgbm==4.3.0
 scikit-learn==1.4.2
+sqlalchemy==2.0.31
