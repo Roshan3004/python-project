@@ -788,12 +788,15 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
             # Fine-tune with recent data (last 500-1000 rows)
             X_recent, y_recent = build_ml_features(df, is_training=True)
             
-            if len(X_recent) >= 50:  # Minimum for fine-tuning
-                # Fine-tune with lower learning rate
+            if len(X_recent) >= 80:  # Minimum for fine-tuning with a small val split
+                # Create a small validation split to enable early stopping
+                Xr_tr, Xr_val, yr_tr, yr_val = train_test_split(
+                    X_recent, y_recent, test_size=0.2, random_state=42, stratify=y_recent
+                )
                 model.fit(
-                    X_recent,
-                    y_recent,
-                    eval_set=[(X_recent, y_recent)],
+                    Xr_tr,
+                    yr_tr,
+                    eval_set=[(Xr_val, yr_val)],
                     callbacks=[early_stopping(stopping_rounds=10)]
                 )
                 print(f"✅ Fine-tuned model on {len(X_recent)} recent samples")

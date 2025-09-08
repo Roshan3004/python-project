@@ -4,7 +4,52 @@ on:
   schedule:
     # Run every 10 minutes
     - cron: '*/10 * * * *'
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "Preset (conservative|balanced|aggressive|very_aggressive)"
+        required: false
+        default: balanced
+      max_signals:
+        description: "Max signals per run"
+        required: false
+        default: '3'
+      source:
+        description: "Data source (db|csv)"
+        required: false
+        default: db
+      csv_path:
+        description: "CSV path if source=csv"
+        required: false
+        default: game_history_rows.csv
+      limit:
+        description: "Rows to load"
+        required: false
+        default: '2000'
+      fast_mode:
+        description: "Enable fast mode"
+        required: false
+        default: 'true'
+      recent_penalty:
+        description: "Enable recent performance penalty"
+        required: false
+        default: 'true'
+      color_prob_threshold:
+        description: "Color prob threshold (balanced preset only)"
+        required: false
+        default: '0.68'
+      min_prob_margin:
+        description: "Min probability margin"
+        required: false
+        default: '0.20'
+      max_entropy:
+        description: "Max entropy"
+        required: false
+        default: '0.85'
+      disable_sleep_window:
+        description: "Ignore quiet hours (1-9 AM IST)"
+        required: false
+        default: 'false'
 
 jobs:
   analyze:
@@ -39,13 +84,17 @@ jobs:
       run: |
         echo "🚀 Starting WinGo Analysis..."
         echo "📊 Configuration:"
-        echo "  - Source: Database"
-        echo "  - Preset: Balanced"
-        echo "  - Max Signals: 3"
-        echo "  - Fast Mode: Enabled"
-        echo "  - Recent Penalty: Enabled"
-        echo "  - Min Prob Margin: 0.20"
-        echo "  - Max Entropy: 0.85"
+        echo "  - Source: ${{ github.event.inputs.source || 'db' }}"
+        echo "  - CSV Path: ${{ github.event.inputs.csv_path || 'game_history_rows.csv' }}"
+        echo "  - Limit: ${{ github.event.inputs.limit || '2000' }}"
+        echo "  - Preset: ${{ github.event.inputs.preset || 'balanced' }}"
+        echo "  - Max Signals: ${{ github.event.inputs.max_signals || '3' }}"
+        echo "  - Fast Mode: ${{ github.event.inputs.fast_mode || 'true' }}"
+        echo "  - Recent Penalty: ${{ github.event.inputs.recent_penalty || 'true' }}"
+        echo "  - Color Threshold: ${{ github.event.inputs.color_prob_threshold || '0.68' }}"
+        echo "  - Min Prob Margin: ${{ github.event.inputs.min_prob_margin || '0.20' }}"
+        echo "  - Max Entropy: ${{ github.event.inputs.max_entropy || '0.85' }}"
+        echo "  - Disable Sleep Window: ${{ github.event.inputs.disable_sleep_window || 'false' }}"
         echo "=========================================="
         
         # Check if environment variables are set
@@ -65,8 +114,22 @@ jobs:
         echo "🔗 Environment variables checked"
         echo "=========================================="
         
+        # Build flags from inputs
+        FAST_FLAG=$([[ "${{ github.event.inputs.fast_mode }}" == "false" ]] && echo "" || echo "--fast_mode")
+        PENALTY_FLAG=$([[ "${{ github.event.inputs.recent_penalty }}" == "false" ]] && echo "" || echo "--enable_recent_penalty")
+        SLEEP_FLAG=$([[ "${{ github.event.inputs.disable_sleep_window }}" == "true" ]] && echo "--disable_sleep_window" || echo "")
+
         # Run the analyzer with error handling
-        python analyze.py --source db --fast_mode --preset balanced --max_signals 3 --enable_recent_penalty --min_prob_margin 0.20 --max_entropy 0.85 || {
+        python analyze.py \
+          --source "${{ github.event.inputs.source || 'db' }}" \
+          --csv_path "${{ github.event.inputs.csv_path || 'game_history_rows.csv' }}" \
+          --limit "${{ github.event.inputs.limit || '2000' }}" \
+          --preset "${{ github.event.inputs.preset || 'balanced' }}" \
+          --max_signals "${{ github.event.inputs.max_signals || '3' }}" \
+          --color_prob_threshold "${{ github.event.inputs.color_prob_threshold || '0.68' }}" \
+          --min_prob_margin "${{ github.event.inputs.min_prob_margin || '0.20' }}" \
+          --max_entropy "${{ github.event.inputs.max_entropy || '0.85' }}" \
+          $FAST_FLAG $PENALTY_FLAG $SLEEP_FLAG || {
           echo "❌ Analysis failed with exit code $?"
           exit 1
         }
