@@ -88,8 +88,20 @@ jobs:
         
         echo "🔗 Environment variables checked"
         echo "=========================================="
-        echo "⏳ Fixed start delay: 71 seconds (waiting for current period to close)"
-        sleep 71
+        echo "⏳ Calculating dynamic wait to align with next period close..."
+        NOW_TS=$(date +%s)
+        # Compute target epoch = next minute boundary + 11 seconds
+        NEXT_MIN=$(( ( (NOW_TS / 60) + 1 ) * 60 ))
+        TARGET_TS=$(( NEXT_MIN + 11 ))
+        SLEEP_SECS=$(( TARGET_TS - NOW_TS ))
+        if [ $SLEEP_SECS -gt 0 ]; then
+          echo "🕒 Current: $(date -u +%H:%M:%S) UTC"
+          echo "🎯 Target:  $(date -u -d @${TARGET_TS} +%H:%M:%S) UTC (next minute + 11s)"
+          echo "😴 Sleeping ${SLEEP_SECS}s to ensure fresh data after period close..."
+          sleep ${SLEEP_SECS}
+        else
+          echo "⚠️ Target already passed; proceeding without extra wait"
+        fi
         
         # Build flags from inputs
         FAST_FLAG=$([[ "${{ github.event.inputs.enable_fast_mode }}" == "false" ]] && echo "" || echo "--fast_mode")
