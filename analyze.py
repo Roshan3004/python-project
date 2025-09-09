@@ -1101,14 +1101,22 @@ def detect_strong_signals(df: pd.DataFrame,
     
     if (max_ml_confidence >= ml_alert_threshold) and (margin >= min_prob_margin) and (entropy <= max_entropy):
         best_color = max(ml_probs, key=ml_probs.get)
-        signals.append({
-            "type": "color",
-            "color": best_color,
-            "confidence": max_ml_confidence,
-            "method": "MachineLearning",
-            "reason": f"ML model predicts {best_color} with {max_ml_confidence:.3f} confidence (margin={margin:.3f}, H={entropy:.3f})",
-            "probs": ml_probs
-        })
+        # Skip VIOLET alerts if disabled via flag/env
+        try:
+            if os.getenv("WINGO_DISABLE_VIOLET_ALERTS", "0") == "1" and best_color == "VIOLET":
+                print("🚫 VIOLET alerts disabled: dropping ML color signal")
+                best_color = None
+        except Exception:
+            pass
+        if best_color is not None:
+            signals.append({
+                "type": "color",
+                "color": best_color,
+                "confidence": max_ml_confidence,
+                "method": "MachineLearning",
+                "reason": f"ML model predicts {best_color} with {max_ml_confidence:.3f} confidence (margin={margin:.3f}, H={entropy:.3f})",
+                "probs": ml_probs
+            })
     else:
         print("❌ ML signal failed margin/entropy/threshold gates")
     
@@ -1285,6 +1293,8 @@ def main():
         parser.add_argument("--force_alert", action="store_true", help="Force send top signal (bypass method/threshold gates)")
         # Probability calibration
         parser.add_argument("--calibration", choices=["none","sigmoid","isotonic"], default="none", help="Calibrate probabilities to reduce overconfidence")
+        # Disable specific alert types
+        parser.add_argument("--disable_violet_alerts", action="store_true", help="Never send VIOLET color alerts")
         # New: tunable alert gates so we can adjust without code edits
         parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
         parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
@@ -1324,6 +1334,7 @@ def main():
     try:
         os.environ["WINGO_FAST_MODE"] = "1" if args.fast_mode else "0"
         os.environ["WINGO_CALIBRATION"] = args.calibration
+        os.environ["WINGO_DISABLE_VIOLET_ALERTS"] = "1" if args.disable_violet_alerts else "0"
     except Exception:
         pass
 
