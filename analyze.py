@@ -9,6 +9,11 @@ from lightgbm import LGBMClassifier, early_stopping
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
+try:
+    # Optional: used when probability calibration is enabled
+    from sklearn.calibration import CalibratedClassifierCV
+except Exception:
+    CalibratedClassifierCV = None
 import pickle
 from pathlib import Path
 from db import MongoStore
@@ -808,6 +813,17 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
                         callbacks=[early_stopping(stopping_rounds=10)]
                     )
                     print(f"✅ Fine-tuned model on {len(X_recent)} recent samples")
+                    # Optional probability calibration on recent validation slice
+                    calibration = os.getenv("WINGO_CALIBRATION", "none").lower()
+                    calibrator = None
+                    if calibration in ("sigmoid", "isotonic") and CalibratedClassifierCV is not None:
+                        try:
+                            calibrator = CalibratedClassifierCV(model, method=("sigmoid" if calibration=="sigmoid" else "isotonic"), cv="prefit")
+                            calibrator.fit(Xr_val, yr_val)
+                            model = calibrator  # replace with calibrated wrapper for downstream predict_proba
+                            print(f"🧪 Applied {calibration} calibration on recent validation slice")
+                        except Exception as _e:
+                            print(f"⚠️  Calibration skipped (recent): {_e}")
                 else:
                     print("⚠️  Insufficient recent data for fine-tuning, using saved model as-is")
         else:
@@ -838,6 +854,16 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
             y_pred = model.predict(X_val)
             accuracy = accuracy_score(y_val, y_pred)
             print(f"🤖 New Model Accuracy: {accuracy:.3f}")
+            # Optional probability calibration on holdout validation set
+            calibration = os.getenv("WINGO_CALIBRATION", "none").lower()
+            if calibration in ("sigmoid", "isotonic") and CalibratedClassifierCV is not None:
+                try:
+                    calibrator = CalibratedClassifierCV(model, method=("sigmoid" if calibration=="sigmoid" else "isotonic"), cv="prefit")
+                    calibrator.fit(X_val, y_val)
+                    model = calibrator
+                    print(f"🧪 Applied {calibration} calibration on validation set")
+                except Exception as _e:
+                    print(f"⚠️  Calibration skipped (scratch): {_e}")
 
         # Build current features for prediction
         X_current, _ = build_ml_features(df, is_training=False)
@@ -1257,6 +1283,8 @@ def main():
         parser.add_argument("--max_entropy", type=float, default=0.85, help="Max allowed entropy of probs for alert (lower = stricter)")
         parser.add_argument("--enable_recent_penalty", action="store_true", help="Penalize threshold if recent accuracy is low")
         parser.add_argument("--force_alert", action="store_true", help="Force send top signal (bypass method/threshold gates)")
+        # Probability calibration
+        parser.add_argument("--calibration", choices=["none","sigmoid","isotonic"], default="none", help="Calibrate probabilities to reduce overconfidence")
         # New: tunable alert gates so we can adjust without code edits
         parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
         parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
@@ -1295,6 +1323,7 @@ def main():
     # Propagate fast_mode to ML layer via env so fine-tune can be skipped quickly
     try:
         os.environ["WINGO_FAST_MODE"] = "1" if args.fast_mode else "0"
+        os.environ["WINGO_CALIBRATION"] = args.calibration
     except Exception:
         pass
 
