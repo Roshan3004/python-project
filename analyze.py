@@ -96,13 +96,17 @@ def build_ml_features(df: pd.DataFrame, is_training: bool = True) -> Tuple[np.nd
         except Exception:
             features.extend([12, 0, 0])
         
-        # Historical color features (1, 2, 3 rounds ago)
-        for lag in [1, 2, 3]:
+        # Enhanced historical color features (1, 2, 3, 4, 5 rounds ago)
+        for lag in [1, 2, 3, 4, 5]:
             if i - lag >= 0:
                 color = train_data.iloc[i - lag]["color"]
-                features.append({"RED": 0, "GREEN": 1, "VIOLET": 2}.get(color, 0))
+                features.extend([
+                    1 if color == "RED" else 0,
+                    1 if color == "GREEN" else 0,
+                    1 if color == "VIOLET" else 0
+                ])
             else:
-                features.append(0)
+                features.extend([0, 0, 0])
         
         # Frequency features (last 10, 30, 50)
         for window in [10, 30, 50]:
@@ -116,17 +120,29 @@ def build_ml_features(df: pd.DataFrame, is_training: bool = True) -> Tuple[np.nd
                 features.extend([0.33, 0.33, 0.34])
         
         # Current streak based on previous color
-        if i - 1 >= 0:
-            current_color = train_data.iloc[i - 1]["color"]
-            streak = 1
-            for j in range(i - 2, max(0, i - 10), -1):
-                if train_data.iloc[j]["color"] == current_color:
-                    streak += 1
-                else:
-                    break
-            features.append(min(streak, 10))
-        else:
-            features.append(1)
+        # Enhanced streak analysis - current and recent streaks
+        current_color = train_data.iloc[i]["color"]
+        streak = 1
+        for j in range(i - 1, max(-1, i - 10), -1):
+            if train_data.iloc[j]["color"] == current_color:
+                streak += 1
+            else:
+                break
+        features.append(min(streak, 10))
+        
+        # Add streak break pattern (was there a long streak recently?)
+        max_recent_streak = 0
+        if i >= 15:
+            for start in range(i - 15, i - 3):
+                temp_streak = 1
+                temp_color = train_data.iloc[start]["color"]
+                for k in range(start + 1, min(start + 8, i)):
+                    if train_data.iloc[k]["color"] == temp_color:
+                        temp_streak += 1
+                    else:
+                        break
+                max_recent_streak = max(max_recent_streak, temp_streak)
+        features.append(min(max_recent_streak, 8))
         
         # Number patterns (last 20)
         if i >= 20:
@@ -323,9 +339,9 @@ def load_csv(path: str) -> pd.DataFrame:
 def load_neon(conn_str: str, limit: int = 1500) -> pd.DataFrame:
     """Load data directly from Neon PostgreSQL using SQLAlchemy engine for speed/stability"""
     query = f"""
-    SELECT period_id, number, color, scraped_at
-    FROM game_history
-    ORDER BY scraped_at DESC
+    SELECT period_id, number, color, scraped_at 
+    FROM game_history 
+    ORDER BY scraped_at DESC 
     LIMIT {limit}
     """
     engine = create_engine(conn_str)
@@ -678,7 +694,7 @@ def format_betting_alert(signal: dict, betting_period: str, accuracy: float) -> 
     current_time = datetime.utcnow()
     try:
         # Always use next minute boundary for clarity in alerts
-        target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
+            target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     except Exception:
         target_dt = (current_time.replace(second=0, microsecond=0) + timedelta(minutes=1))
     seconds_until = max(0, int((target_dt - current_time).total_seconds()))
@@ -771,7 +787,7 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
     if len(df) < min_data_points:
         print(f"⚠️  Insufficient data for ML model (need {min_data_points}, have {len(df)})")
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
-
+    
     try:
         # Try to load saved model first
         saved_model = load_saved_model()
@@ -893,7 +909,7 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
                 pass
         
         return color_probs
-
+        
     except Exception as e:
         print(f"❌ ML Model Error: {e}")
         return {"RED": 0.33, "GREEN": 0.33, "VIOLET": 0.34}
@@ -990,36 +1006,48 @@ def detect_volatility(df: pd.DataFrame, lookback: int = 30) -> float:
     return volatility
 
 def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[str, float]:
-    """Analyze recent performance to adjust confidence dynamically"""
+    """Analyze recent alert performance to adjust confidence penalties and detect consecutive losses"""
+    if not conn_str:
+        return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}, "consecutive_losses": 0}
+    
     try:
         import psycopg2
-        from datetime import datetime, timedelta
-        
-        cutoff = datetime.utcnow() - timedelta(hours=lookback_hours)
-        
         with psycopg2.connect(conn_str) as conn:
             with conn.cursor() as cur:
-                # Get recent resolved predictions
+                # Get recent alerts and their outcomes
                 cur.execute("""
-                    SELECT hit_color, confidence, method 
-                    FROM prediction_alerts 
-                    WHERE created_at >= %s 
-                    AND resolved_at IS NOT NULL 
+                    SELECT hit, confidence, sources, created_at
+                    FROM alert_log 
+                    WHERE created_at >= NOW() - INTERVAL %s HOUR
+                    AND outcome IS NOT NULL
                     ORDER BY created_at DESC
-                    LIMIT 10
-                """, (cutoff,))
+                    LIMIT 50
+                """, (lookback_hours,))
                 
                 results = cur.fetchall()
-                if not results:
-                    return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
                 
-                # Calculate recent accuracy
-                hits = sum(1 for hit, _, _ in results if hit)
+                if len(results) < 5:  # Need minimum data
+                    return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}, "consecutive_losses": 0}
+                
+                # Calculate consecutive losses from most recent alerts
+                consecutive_losses = 0
+                for hit, _, _, _ in results:
+                    if not hit:  # Loss
+                        consecutive_losses += 1
+                    else:  # Win - break the streak
+                        break
+                
+                # Calculate overall accuracy
+                hits = sum(1 for hit, _, _, _ in results if hit)
                 accuracy = hits / len(results)
                 
-                # Calculate confidence penalty based on recent performance
-                if accuracy < 0.4:  # Very poor recent performance
+                # Enhanced confidence penalty based on consecutive losses and accuracy
+                if consecutive_losses >= 3:  # 3+ consecutive losses
+                    confidence_penalty = 0.15
+                elif consecutive_losses >= 2:  # 2 consecutive losses
                     confidence_penalty = 0.10
+                elif accuracy < 0.4:  # Very poor recent performance
+                    confidence_penalty = 0.08
                 elif accuracy < 0.6:  # Poor recent performance
                     confidence_penalty = 0.05
                 else:
@@ -1027,7 +1055,7 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
                 
                 # Calculate method-specific penalties
                 method_performance = {}
-                for hit, conf, method in results:
+                for hit, conf, method, _ in results:
                     if method not in method_performance:
                         method_performance[method] = {"hits": 0, "total": 0}
                     method_performance[method]["total"] += 1
@@ -1047,10 +1075,11 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
                 return {
                     "accuracy": accuracy,
                     "confidence_penalty": confidence_penalty,
-                    "method_penalty": method_penalty
+                    "method_penalty": method_penalty,
+                    "consecutive_losses": consecutive_losses
                 }
     except Exception:
-        return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}}
+        return {"accuracy": 0.5, "confidence_penalty": 0.0, "method_penalty": {}, "consecutive_losses": 0}
 
 def detect_strong_signals(df: pd.DataFrame, 
                          ml_threshold: float = 0.70,
@@ -1101,10 +1130,16 @@ def detect_strong_signals(df: pd.DataFrame,
     
     if (max_ml_confidence >= ml_alert_threshold) and (margin >= min_prob_margin) and (entropy <= max_entropy):
         best_color = max(ml_probs, key=ml_probs.get)
-        # Skip VIOLET alerts if disabled via flag/env
+        # Enhanced VIOLET filtering - skip if recent VIOLET rate is high or disabled
         try:
+            recent_colors = df.tail(60)["color"].tolist()
+            violet_rate = recent_colors.count("VIOLET") / len(recent_colors)
+            
             if os.getenv("WINGO_DISABLE_VIOLET_ALERTS", "0") == "1" and best_color == "VIOLET":
                 print("🚫 VIOLET alerts disabled: dropping ML color signal")
+                best_color = None
+            elif best_color == "VIOLET" and violet_rate > 0.20:  # More than 20% VIOLET recently
+                print(f"🚫 VIOLET rate too high ({violet_rate:.2%}): dropping VIOLET signal")
                 best_color = None
         except Exception:
             pass
@@ -1278,7 +1313,7 @@ def main():
         parser.add_argument("--csv_path", default="game_history.csv", help="CSV file path")
         parser.add_argument("--limit", type=int, default=2000, help="Number of rows to load")
         parser.add_argument("--preset", choices=["conservative", "balanced", "aggressive", "very_aggressive"], 
-                           default="balanced", help="Signal frequency preset")
+                            default="balanced", help="Signal frequency preset")
         parser.add_argument("--max_signals", type=int, default=3, help="Maximum signals per run")
         parser.add_argument("--color_prob_threshold", type=float, default=0.68, help="Minimum confidence for color signals")
         parser.add_argument("--min_sources", type=int, default=2, help="Minimum sources for ensemble")
@@ -1360,7 +1395,7 @@ def main():
         if 1 <= ist_now.hour < 9:
             print(f"🛌 Quiet hours active (IST {ist_now.strftime('%H:%M')}). Skipping analysis. Use --disable_sleep_window to override.")
             return
-
+    
     # Load data
     try:
         if args.source == "csv":
@@ -1437,15 +1472,22 @@ def main():
             if args.enable_recent_penalty:
                 rp = analyze_recent_performance(cfg.neon_conn_str)
                 penalty = rp.get("confidence_penalty", 0.0)
+                consecutive_losses = rp.get("consecutive_losses", 0)
                 base_ml_threshold = min(0.90, base_ml_threshold + penalty)
                 print(f"📉 Recent penalty applied: +{penalty:.3f} → ML threshold {base_ml_threshold:.3f}")
+                
+                # Skip signals if too many consecutive losses
+                if consecutive_losses >= 3:
+                    print(f"🛑 PAUSING ALERTS: {consecutive_losses} consecutive losses detected")
+                    print("   System will wait for market conditions to improve")
+                    return
             # Export gating knobs so detect_strong_signals can read them without refactoring signature
             try:
                 os.environ["WINGO_MIN_PROB_MARGIN"] = str(args.min_prob_margin)
                 os.environ["WINGO_MAX_ENTROPY"] = str(args.max_entropy)
             except Exception:
                 pass
-            signals = detect_strong_signals(df,
+            signals = detect_strong_signals(df, 
                                             ml_threshold=base_ml_threshold,
                                             size_threshold=0.70,
                                             conn_str=cfg.neon_conn_str)
@@ -1463,7 +1505,7 @@ def main():
                 os.environ["WINGO_MAX_ENTROPY"] = str(args.max_entropy)
             except Exception:
                 pass
-            signals = detect_strong_signals(df,
+            signals = detect_strong_signals(df, 
                                             ml_threshold=base_ml_threshold,
                                             size_threshold=0.70,
                                             conn_str=cfg.neon_conn_str)
@@ -1484,7 +1526,7 @@ def main():
         else:
             print("No strong signals detected with current threshold.")
             print("Consider using --preset aggressive or --preset very_aggressive for more signals.")
-            return
+        return
 
     # Display signals
     print(f"\n🎯 Strong Signals Detected: {len(signals)}")
