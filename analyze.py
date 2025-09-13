@@ -96,8 +96,8 @@ def build_ml_features(df: pd.DataFrame, is_training: bool = True) -> Tuple[np.nd
         except Exception:
             features.extend([12, 0, 0])
         
-        # Enhanced historical color features (1, 2, 3, 4, 5 rounds ago)
-        for lag in [1, 2, 3, 4, 5]:
+        # Historical color features (1, 2, 3 rounds ago)
+        for lag in [1, 2, 3]:
             if i - lag >= 0:
                 color = train_data.iloc[i - lag]["color"]
                 features.extend([
@@ -119,8 +119,7 @@ def build_ml_features(df: pd.DataFrame, is_training: bool = True) -> Tuple[np.nd
             else:
                 features.extend([0.33, 0.33, 0.34])
         
-        # Current streak based on previous color
-        # Enhanced streak analysis - current and recent streaks
+        # Current color streak length (capped at 10)
         current_color = train_data.iloc[i]["color"]
         streak = 1
         for j in range(i - 1, max(-1, i - 10), -1):
@@ -129,20 +128,6 @@ def build_ml_features(df: pd.DataFrame, is_training: bool = True) -> Tuple[np.nd
             else:
                 break
         features.append(min(streak, 10))
-        
-        # Add streak break pattern (was there a long streak recently?)
-        max_recent_streak = 0
-        if i >= 15:
-            for start in range(i - 15, i - 3):
-                temp_streak = 1
-                temp_color = train_data.iloc[start]["color"]
-                for k in range(start + 1, min(start + 8, i)):
-                    if train_data.iloc[k]["color"] == temp_color:
-                        temp_streak += 1
-                    else:
-                        break
-                max_recent_streak = max(max_recent_streak, temp_streak)
-        features.append(min(max_recent_streak, 8))
         
         # Number patterns (last 20)
         if i >= 20:
