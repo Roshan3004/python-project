@@ -1115,19 +1115,10 @@ def detect_strong_signals(df: pd.DataFrame,
     
     if (max_ml_confidence >= ml_alert_threshold) and (margin >= min_prob_margin) and (entropy <= max_entropy):
         best_color = max(ml_probs, key=ml_probs.get)
-        # Enhanced VIOLET filtering - skip if recent VIOLET rate is high or disabled
-        try:
-            recent_colors = df.tail(60)["color"].tolist()
-            violet_rate = recent_colors.count("VIOLET") / len(recent_colors)
-            
-            if os.getenv("WINGO_DISABLE_VIOLET_ALERTS", "0") == "1" and best_color == "VIOLET":
-                print("🚫 VIOLET alerts disabled: dropping ML color signal")
-                best_color = None
-            elif best_color == "VIOLET" and violet_rate > 0.20:  # More than 20% VIOLET recently
-                print(f"🚫 VIOLET rate too high ({violet_rate:.2%}): dropping VIOLET signal")
-                best_color = None
-        except Exception:
-            pass
+        # VIOLET alerts completely disabled - focus on RED/GREEN for better accuracy
+        if best_color == "VIOLET":
+            print("🚫 VIOLET alerts disabled: dropping VIOLET signal (low accuracy)")
+            best_color = None
         if best_color is not None:
             signals.append({
                 "type": "color",
