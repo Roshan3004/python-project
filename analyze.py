@@ -1115,10 +1115,28 @@ def detect_strong_signals(df: pd.DataFrame,
     
     if (max_ml_confidence >= ml_alert_threshold) and (margin >= min_prob_margin) and (entropy <= max_entropy):
         best_color = max(ml_probs, key=ml_probs.get)
+        
         # VIOLET alerts completely disabled - focus on RED/GREEN for better accuracy
         if best_color == "VIOLET":
             print("🚫 VIOLET alerts disabled: dropping VIOLET signal (low accuracy)")
             best_color = None
+        
+        # Enhanced quality filtering for streak prevention
+        if best_color is not None:
+            # Check recent volatility - skip if market is too chaotic
+            recent_colors = df.tail(20)["color"].tolist()
+            volatility = calculate_volatility(recent_colors)
+            
+            # Skip signals during high volatility periods
+            if volatility > 0.75:
+                print(f"🌪️  High volatility ({volatility:.2f}): skipping signal to prevent streak")
+                best_color = None
+            
+            # Check if this color just had a loss streak recently
+            elif best_color in recent_colors[-3:] and len([c for c in recent_colors[-3:] if c == best_color]) >= 2:
+                print(f"🔄 {best_color} appeared frequently in last 3: avoiding potential pattern trap")
+                best_color = None
+        
         if best_color is not None:
             signals.append({
                 "type": "color",
@@ -1452,8 +1470,8 @@ def main():
                 base_ml_threshold = min(0.90, base_ml_threshold + penalty)
                 print(f"📉 Recent penalty applied: +{penalty:.3f} → ML threshold {base_ml_threshold:.3f}")
                 
-                # Skip signals if too many consecutive losses
-                if consecutive_losses >= 3:
+                # Enhanced anti-streak mechanism - skip after 2+ consecutive losses
+                if consecutive_losses >= 2:
                     print(f"🛑 PAUSING ALERTS: {consecutive_losses} consecutive losses detected")
                     print("   System will wait for market conditions to improve")
                     return
