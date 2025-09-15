@@ -1121,21 +1121,23 @@ def detect_strong_signals(df: pd.DataFrame,
             print("🚫 VIOLET alerts disabled: dropping VIOLET signal (low accuracy)")
             best_color = None
         
-        # Enhanced quality filtering for streak prevention
+        # Enhanced quality filtering for streak prevention (relaxed)
         if best_color is not None:
-            # Check recent volatility - skip if market is too chaotic
+            # Check recent volatility - only skip if extremely chaotic
             recent_colors = df.tail(20)["color"].tolist()
             volatility = calculate_volatility(recent_colors)
             
-            # Skip signals during high volatility periods
-            if volatility > 0.75:
-                print(f"🌪️  High volatility ({volatility:.2f}): skipping signal to prevent streak")
+            # Only skip during extreme volatility
+            if volatility > 0.85:
+                print(f"🌪️  Extreme volatility ({volatility:.2f}): skipping signal")
                 best_color = None
             
-            # Check if this color just had a loss streak recently
-            elif best_color in recent_colors[-3:] and len([c for c in recent_colors[-3:] if c == best_color]) >= 2:
-                print(f"🔄 {best_color} appeared frequently in last 3: avoiding potential pattern trap")
+            # Only avoid if same color appeared 3 times in last 3 rounds (very rare)
+            elif len([c for c in recent_colors[-3:] if c == best_color]) >= 3:
+                print(f"🔄 {best_color} appeared 3 times in last 3: avoiding pattern trap")
                 best_color = None
+            
+            print(f"✅ Signal passed quality filters: volatility={volatility:.2f}, recent_pattern=OK")
         
         if best_color is not None:
             signals.append({
