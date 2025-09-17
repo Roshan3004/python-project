@@ -1464,34 +1464,11 @@ def main():
                 base_ml_threshold = min(0.90, base_ml_threshold + penalty)
                 print(f"📉 Recent penalty applied: +{penalty:.3f} → ML threshold {base_ml_threshold:.3f}")
                 
-                # Enhanced anti-streak mechanism - cooling off period after loss
-                if consecutive_losses >= 1:
-                    # Check if enough time has passed since last loss (15 minutes cooling off)
-                    try:
-                        import psycopg2
-                        with psycopg2.connect(cfg.neon_conn_str) as conn:
-                            with conn.cursor() as cur:
-                                cur.execute("""
-                                    SELECT created_at FROM alert_log 
-                                    WHERE outcome IS NOT NULL AND hit = false
-                                    ORDER BY created_at DESC LIMIT 1
-                                """)
-                                result = cur.fetchone()
-                                if result:
-                                    from datetime import datetime, timedelta
-                                    last_loss_time = result[0]
-                                    cooling_period = timedelta(minutes=15)
-                                    if datetime.utcnow() - last_loss_time < cooling_period:
-                                        remaining = cooling_period - (datetime.utcnow() - last_loss_time)
-                                        print(f"🛑 COOLING OFF: {consecutive_losses} consecutive losses detected")
-                                        print(f"   Wait {remaining.seconds//60}m {remaining.seconds%60}s before next signal")
-                                        return
-                                    else:
-                                        print(f"✅ Cooling period expired - ready for high-confidence signals")
-                    except Exception:
-                        # Fallback to simple pause if DB check fails
-                        print(f"🛑 PAUSING ALERTS: {consecutive_losses} consecutive losses detected")
-                        return
+                # Note: Anti-streak pause disabled - ultra-high threshold (0.78) provides sufficient quality control
+                if consecutive_losses >= 3:  # Only pause after 3+ consecutive losses (extreme case)
+                    print(f"🛑 PAUSING ALERTS: {consecutive_losses} consecutive losses detected")
+                    print("   System will wait for market conditions to improve")
+                    return
             # Export gating knobs so detect_strong_signals can read them without refactoring signature
             try:
                 os.environ["WINGO_MIN_PROB_MARGIN"] = str(args.min_prob_margin)
