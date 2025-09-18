@@ -437,6 +437,7 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
     """Update prediction_alerts with actual outcome from game_history for unresolved rows.
     Uses the NEXT period after the anchor to determine outcomes.
     """
+    print(f"🔄 Starting outcome resolution for unresolved alerts...")
     try:
         import psycopg2
         with psycopg2.connect(conn_str) as conn:
@@ -466,6 +467,7 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                 )
                 
                 unresolved = cur.fetchall()
+                print(f"📋 Found {len(unresolved)} unresolved alerts to process")
                 
                 for alert_id, anchor_period, predicted_color, predicted_number in unresolved:
                     # Find the NEXT period after anchor_period
@@ -508,8 +510,9 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                         )
                 
             conn.commit()
+            print(f"✅ Outcome resolution completed successfully")
     except Exception as e:
-        print(f"Warning: Could not resolve alerts: {e}")
+        print(f"⚠️  Outcome resolution failed: {e}")
         pass
 
 def color_from_number(n: int) -> str:
