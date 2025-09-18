@@ -857,23 +857,6 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
             y_pred = model.predict(X_val)
             accuracy = accuracy_score(y_val, y_pred)
             print(f"🤖 New Model Accuracy: {accuracy:.3f}")
-            # Optional probability calibration
-            calibration_method = os.getenv("WINGO_CALIBRATION", "none")
-            if calibration_method != "none" and calibration_method in ["sigmoid", "isotonic"]:
-                print(f"🎯 Applying {calibration_method} calibration to probabilities...")
-                try:
-                    from sklearn.calibration import CalibratedClassifierCV
-                    # Note: This requires the model to be retrained with calibration
-                    # For now, apply simple probability adjustment to reduce overconfidence
-                    max_prob = max(ml_probs.values())
-                    if max_prob > 0.85:  # Reduce overconfident predictions
-                        adjustment = 0.95 - max_prob
-                        for color in ml_probs:
-                            if ml_probs[color] == max_prob:
-                                ml_probs[color] = min(0.85, ml_probs[color] + adjustment * 0.3)
-                        print(f"📉 Calibration: reduced overconfident prediction from {max_prob:.3f}")
-                except Exception as e:
-                    print(f"⚠️  Calibration failed: {e}")
         
 
         # Build current features for prediction
@@ -887,6 +870,23 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
         probabilities = model.predict_proba(X_current)[0]
         color_probs = {"RED": probabilities[0], "GREEN": probabilities[1], "VIOLET": probabilities[2]}
         print(f"🤖 ML Prediction: R={color_probs['RED']:.3f}, G={color_probs['GREEN']:.3f}, V={color_probs['VIOLET']:.3f}")
+        
+        # Apply calibration to reduce overconfidence
+        calibration_method = os.getenv("WINGO_CALIBRATION", "none")
+        if calibration_method != "none" and calibration_method in ["sigmoid", "isotonic"]:
+            print(f"🎯 Applying {calibration_method} calibration to probabilities...")
+            try:
+                max_prob = max(color_probs.values())
+                if max_prob > 0.85:  # Reduce overconfident predictions
+                    adjustment = 0.95 - max_prob
+                    for color in color_probs:
+                        if color_probs[color] == max_prob:
+                            old_prob = color_probs[color]
+                            color_probs[color] = min(0.85, color_probs[color] + adjustment * 0.3)
+                            print(f"📉 Calibration: reduced {color} from {old_prob:.3f} to {color_probs[color]:.3f}")
+                            break
+            except Exception as e:
+                print(f"⚠️  Calibration failed: {e}")
         
         # Save updated model (if fine-tuned or newly trained)
         if not use_saved_model or (not os.getenv("WINGO_FAST_MODE", "0") == "1" and 'X_recent' in locals() and len(X_recent) >= 50):
