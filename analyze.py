@@ -1177,6 +1177,7 @@ def detect_strong_signals(df: pd.DataFrame,
         # Enhanced quality filtering with per-color cooldown (temporarily disabled)
         if best_color is not None:
             # TEMPORARY: Per-color cooldown disabled until we rebuild history
+            from datetime import datetime, timedelta
             try:
                 if conn_str:
                     import psycopg2
@@ -1194,7 +1195,6 @@ def detect_strong_signals(df: pd.DataFrame,
                                 """, (best_color,))
                                 result = cur.fetchone()
                                 if result:
-                                    from datetime import datetime, timedelta
                                     last_loss_time = result[0]
                                     cooldown_period = timedelta(minutes=20)
                                     if datetime.utcnow() - last_loss_time < cooldown_period:
@@ -1573,9 +1573,9 @@ def main():
                     print("   Precision-based features temporarily disabled")
                 else:
                     # Daily stop-loss check - stop after 2 losses in current day
+                    from datetime import datetime, timedelta
                     try:
                         import psycopg2
-                        from datetime import datetime, timedelta
                         today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
                         with psycopg2.connect(cfg.neon_conn_str) as conn:
                             with conn.cursor() as cur:
