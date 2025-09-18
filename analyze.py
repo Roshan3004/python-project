@@ -427,8 +427,10 @@ def log_alert_to_neon(conn_str: str,
                     ),
                 )
             conn.commit()
-    except Exception:
-        # Intentionally swallow logging errors to not affect alerting
+            print(f"✅ Alert logged to database: {predicted_color} for period {anchor_period_id}")
+    except Exception as e:
+        # Log the error but don't crash the alerting
+        print(f"⚠️  Database logging failed: {e}")
         pass
 
 def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
@@ -1822,8 +1824,8 @@ def main():
                 else:
                     print(f"Alert sent for {best_signal['size']}: {ok}")
                 
-                # Log to database if enabled
-                if args.log_to_db:
+                # Log to database (always enabled for tracking)
+                if True:  # Always log for precision tracking
                     try:
                         anchor_pid = str(df["period_id"].iloc[-1])
                         if best_signal["type"] == "color":
