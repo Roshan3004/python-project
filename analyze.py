@@ -855,16 +855,24 @@ def analyze_with_ml_model(df: pd.DataFrame, min_data_points: int = 200) -> Dict[
             y_pred = model.predict(X_val)
             accuracy = accuracy_score(y_val, y_pred)
             print(f"🤖 New Model Accuracy: {accuracy:.3f}")
-            # Optional probability calibration on holdout validation set
-            calibration = os.getenv("WINGO_CALIBRATION", "none").lower()
-            if calibration in ("sigmoid", "isotonic") and CalibratedClassifierCV is not None:
+            # Optional probability calibration
+            calibration_method = os.getenv("WINGO_CALIBRATION", "none")
+            if calibration_method != "none" and calibration_method in ["sigmoid", "isotonic"]:
+                print(f"🎯 Applying {calibration_method} calibration to probabilities...")
                 try:
-                    calibrator = CalibratedClassifierCV(model, method=("sigmoid" if calibration=="sigmoid" else "isotonic"), cv="prefit")
-                    calibrator.fit(X_val, y_val)
-                    model = calibrator
-                    print(f"🧪 Applied {calibration} calibration on validation set")
-                except Exception as _e:
-                    print(f"⚠️  Calibration skipped (scratch): {_e}")
+                    from sklearn.calibration import CalibratedClassifierCV
+                    # Note: This requires the model to be retrained with calibration
+                    # For now, apply simple probability adjustment to reduce overconfidence
+                    max_prob = max(ml_probs.values())
+                    if max_prob > 0.85:  # Reduce overconfident predictions
+                        adjustment = 0.95 - max_prob
+                        for color in ml_probs:
+                            if ml_probs[color] == max_prob:
+                                ml_probs[color] = min(0.85, ml_probs[color] + adjustment * 0.3)
+                        print(f"📉 Calibration: reduced overconfident prediction from {max_prob:.3f}")
+                except Exception as e:
+                    print(f"⚠️  Calibration failed: {e}")
+        
 
         # Build current features for prediction
         X_current, _ = build_ml_features(df, is_training=False)
@@ -990,6 +998,51 @@ def detect_volatility(df: pd.DataFrame, lookback: int = 30) -> float:
     volatility = switches / max(1, len(colors) - 1)
     return volatility
 
+def get_recent_precision(conn_str: str, lookback_count: int = 50) -> Dict[str, float]:
+    """Get recent alert precision to gate signal quality"""
+    if not conn_str:
+        return {"overall_precision": 0.5, "red_precision": 0.5, "green_precision": 0.5, "total_alerts": 0}
+    
+    try:
+        import psycopg2
+        with psycopg2.connect(conn_str) as conn:
+            with conn.cursor() as cur:
+                # Get recent resolved alerts
+                cur.execute("""
+                    SELECT (outcome_color = predicted_color) as hit, predicted_color
+                    FROM prediction_alerts 
+                    WHERE outcome_color IS NOT NULL
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                """, (lookback_count,))
+                
+                results = cur.fetchall()
+                
+                if len(results) < 10:  # Need minimum data
+                    return {"overall_precision": 0.5, "red_precision": 0.5, "green_precision": 0.5, "total_alerts": len(results)}
+                
+                # Calculate overall precision
+                hits = sum(1 for hit, _ in results if hit)
+                overall_precision = hits / len(results)
+                
+                # Calculate per-color precision
+                red_hits = sum(1 for hit, color in results if hit and color == "RED")
+                red_total = sum(1 for _, color in results if color == "RED")
+                red_precision = red_hits / red_total if red_total > 0 else 0.5
+                
+                green_hits = sum(1 for hit, color in results if hit and color == "GREEN")
+                green_total = sum(1 for _, color in results if color == "GREEN")
+                green_precision = green_hits / green_total if green_total > 0 else 0.5
+                
+                return {
+                    "overall_precision": overall_precision,
+                    "red_precision": red_precision,
+                    "green_precision": green_precision,
+                    "total_alerts": len(results)
+                }
+    except Exception:
+        return {"overall_precision": 0.5, "red_precision": 0.5, "green_precision": 0.5, "total_alerts": 0}
+
 def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[str, float]:
     """Analyze recent alert performance to adjust confidence penalties and detect consecutive losses"""
     if not conn_str:
@@ -1001,10 +1054,10 @@ def analyze_recent_performance(conn_str: str, lookback_hours: int = 4) -> Dict[s
             with conn.cursor() as cur:
                 # Get recent alerts and their outcomes
                 cur.execute("""
-                    SELECT hit, confidence, sources, created_at
-                    FROM alert_log 
+                    SELECT (outcome_color = predicted_color) as hit, confidence, sources, created_at
+                    FROM prediction_alerts 
                     WHERE created_at >= NOW() - INTERVAL %s HOUR
-                    AND outcome IS NOT NULL
+                    AND outcome_color IS NOT NULL
                     ORDER BY created_at DESC
                     LIMIT 50
                 """, (lookback_hours,))
@@ -1121,15 +1174,57 @@ def detect_strong_signals(df: pd.DataFrame,
             print("🚫 VIOLET alerts disabled: dropping VIOLET signal (low accuracy)")
             best_color = None
         
-        # Enhanced quality filtering for streak prevention (simplified)
+        # Enhanced quality filtering with per-color cooldown (temporarily disabled)
         if best_color is not None:
-            # Check for pattern traps - only avoid if same color appeared 3 times in last 3 rounds
-            recent_colors = df.tail(20)["color"].tolist()
-            if len([c for c in recent_colors[-3:] if c == best_color]) >= 3:
-                print(f"🔄 {best_color} appeared 3 times in last 3: avoiding pattern trap")
-                best_color = None
-            else:
-                print(f"✅ Signal passed quality filters: recent_pattern=OK")
+            # TEMPORARY: Per-color cooldown disabled until we rebuild history
+            try:
+                if conn_str:
+                    import psycopg2
+                    with psycopg2.connect(conn_str) as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT COUNT(*) FROM prediction_alerts WHERE outcome_color IS NOT NULL")
+                            outcome_count = cur.fetchone()[0]
+                            
+                            if outcome_count >= 10:  # Need some history for cooldowns
+                                cur.execute("""
+                                    SELECT created_at FROM prediction_alerts 
+                                    WHERE outcome_color IS NOT NULL AND outcome_color != predicted_color 
+                                    AND predicted_color = %s
+                                    ORDER BY created_at DESC LIMIT 1
+                                """, (best_color,))
+                                result = cur.fetchone()
+                                if result:
+                                    from datetime import datetime, timedelta
+                                    last_loss_time = result[0]
+                                    cooldown_period = timedelta(minutes=20)
+                                    if datetime.utcnow() - last_loss_time < cooldown_period:
+                                        remaining = cooldown_period - (datetime.utcnow() - last_loss_time)
+                                        print(f"🕒 {best_color} COOLDOWN: {remaining.seconds//60}m {remaining.seconds%60}s remaining")
+                                        best_color = None
+                            else:
+                                print(f"🔄 Per-color cooldown disabled: building history ({outcome_count}/10 outcomes)")
+            except Exception:
+                pass
+            
+            # Pattern trap detection
+            if best_color is not None:
+                recent_colors = df.tail(20)["color"].tolist()
+                if len([c for c in recent_colors[-3:] if c == best_color]) >= 3:
+                    print(f"🔄 {best_color} appeared 3 times in last 3: avoiding pattern trap")
+                    best_color = None
+                else:
+                    # Ensemble confirmation for marginal signals
+                    if max_ml_confidence < 0.80:  # Marginal confidence
+                        print(f"⚠️  Marginal confidence {max_ml_confidence:.3f} - checking ensemble agreement")
+                        # TODO: Add momentum/pattern confirmation here
+                        # For now, require higher margin for marginal signals
+                        if margin < 0.25:
+                            print(f"🚫 Marginal signal rejected: insufficient margin {margin:.3f}")
+                            best_color = None
+                        else:
+                            print(f"✅ {best_color} marginal signal approved: good margin {margin:.3f}")
+                    else:
+                        print(f"✅ {best_color} high-confidence signal approved")
         
         if best_color is not None:
             signals.append({
@@ -1143,23 +1238,27 @@ def detect_strong_signals(df: pd.DataFrame,
     else:
         print("❌ ML signal failed margin/entropy/threshold gates")
     
-    # 2. Big/Small Analysis (Keep this as it's complementary to color prediction)
-    size_probs, size_conf, size_reason = analyze_big_small(df)
-    print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
-    
-    # Lower threshold for size signals to generate more alerts
-    size_alert_threshold = max(0.65, size_threshold - 0.05)  # tighter size threshold
-    
-    if size_conf >= size_alert_threshold:
-        best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
-        signals.append({
-            "type": "size",
-            "size": best_size,
-            "confidence": size_conf,
-            "method": "BigSmall",
-            "reason": f"Size analysis suggests {best_size} with {size_conf:.3f} confidence",
-            "probs": size_probs
-        })
+    # 2. Big/Small Analysis (Optional - can be disabled for focus on color accuracy)
+    disable_size = os.getenv("WINGO_DISABLE_SIZE_ALERTS", "0") == "1"
+    if disable_size:
+        print("⚖️  Size analysis: DISABLED (focusing on color accuracy)")
+    else:
+        size_probs, size_conf, size_reason = analyze_big_small(df)
+        print(f"⚖️  Size analysis: conf={size_conf:.3f} (threshold: {size_threshold:.3f})")
+        
+        # Lower threshold for size signals to generate more alerts
+        size_alert_threshold = max(0.65, size_threshold - 0.05)  # tighter size threshold
+        
+        if size_conf >= size_alert_threshold:
+            best_size = "BIG" if size_probs["BIG"] >= size_probs["SMALL"] else "SMALL"
+            signals.append({
+                "type": "size",
+                "size": best_size,
+                "confidence": size_conf,
+                "method": "BigSmall",
+                "reason": f"Size analysis suggests {best_size} with {size_conf:.3f} confidence",
+                "probs": size_probs
+            })
     
     # 3. Ensemble Analysis (Combine ML with size if both are strong)
     color_signals = [s for s in signals if s["type"] == "color"]
@@ -1315,7 +1414,8 @@ def main():
         parser.add_argument("--enable_recent_penalty", action="store_true", help="Penalize threshold if recent accuracy is low")
         parser.add_argument("--force_alert", action="store_true", help="Force send top signal (bypass method/threshold gates)")
         # Probability calibration
-        parser.add_argument("--calibration", choices=["none","sigmoid","isotonic"], default="none", help="Calibrate probabilities to reduce overconfidence")
+        parser.add_argument("--calibration", choices=["none","sigmoid","isotonic"], default="isotonic", help="Calibrate probabilities to reduce overconfidence")
+        parser.add_argument("--disable_size_alerts", action="store_true", help="Disable size (BIG/SMALL) alerts to focus on color accuracy")
         # Disable specific alert types
         parser.add_argument("--disable_violet_alerts", action="store_true", help="Never send VIOLET color alerts")
         # New: tunable alert gates so we can adjust without code edits
@@ -1458,14 +1558,65 @@ def main():
                 return
             base_ml_threshold = preset_config["momentum"]
             if args.enable_recent_penalty:
+                # Get recent precision for dynamic gating
+                precision_data = get_recent_precision(cfg.neon_conn_str, 50)
+                overall_precision = precision_data["overall_precision"]
+                red_precision = precision_data["red_precision"] 
+                green_precision = precision_data["green_precision"]
+                total_alerts = precision_data["total_alerts"]
+                
+                print(f"📊 Recent Performance (last 50): Overall={overall_precision:.1%}, RED={red_precision:.1%}, GREEN={green_precision:.1%}")
+                
+                # TEMPORARY: Precision-based features disabled until we rebuild history
+                if total_alerts < 20:
+                    print(f"📊 Building history: {total_alerts}/20 alerts needed for precision gating")
+                    print("   Precision-based features temporarily disabled")
+                else:
+                    # Daily stop-loss check - stop after 2 losses in current day
+                    try:
+                        import psycopg2
+                        from datetime import datetime, timedelta
+                        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                        with psycopg2.connect(cfg.neon_conn_str) as conn:
+                            with conn.cursor() as cur:
+                                cur.execute("""
+                                    SELECT COUNT(*) FROM prediction_alerts 
+                                    WHERE outcome_color IS NOT NULL AND outcome_color != predicted_color 
+                                    AND created_at >= %s
+                                """, (today_start,))
+                                daily_losses = cur.fetchone()[0]
+                                
+                                if daily_losses >= 2:
+                                    print(f"🛑 DAILY STOP-LOSS: {daily_losses} losses today - no more signals until tomorrow")
+                                    return
+                                elif daily_losses >= 1:
+                                    print(f"⚠️  Daily loss warning: {daily_losses}/2 losses today - being extra cautious")
+                                    base_ml_threshold = min(0.90, base_ml_threshold + 0.03)
+                    except Exception:
+                        pass
+                    
+                    # Dynamic precision gate - suppress signals if recent performance is poor
+                    if overall_precision < 0.55:
+                        print(f"🚫 SUPPRESSING SIGNALS: Recent precision {overall_precision:.1%} < 55%")
+                        print("   Reason: System accuracy too low - waiting for better conditions")
+                        return
+                    elif overall_precision < 0.65:
+                        print(f"⚠️  LOW PRECISION WARNING: {overall_precision:.1%} - applying stricter gates")
+                        print(f"   Reason: Recent performance below target - increasing thresholds")
+                        # Increase thresholds for poor performance
+                        base_ml_threshold = min(0.90, base_ml_threshold + 0.05)
+                        os.environ["WINGO_MIN_PROB_MARGIN"] = "0.25"  # Stricter margin
+                        os.environ["WINGO_MAX_ENTROPY"] = "0.75"      # Stricter entropy
+                
+                # Traditional penalty system
                 rp = analyze_recent_performance(cfg.neon_conn_str)
                 penalty = rp.get("confidence_penalty", 0.0)
                 consecutive_losses = rp.get("consecutive_losses", 0)
                 base_ml_threshold = min(0.90, base_ml_threshold + penalty)
-                print(f"📉 Recent penalty applied: +{penalty:.3f} → ML threshold {base_ml_threshold:.3f}")
+                print(f"📉 Threshold adjustments: +{penalty:.3f} → Final ML threshold {base_ml_threshold:.3f}")
                 
-                # Note: Anti-streak pause disabled - ultra-high threshold (0.78) provides sufficient quality control
-                if consecutive_losses >= 3:  # Only pause after 3+ consecutive losses (extreme case)
+                # Anti-streak protection for extreme cases
+                if consecutive_losses >= 3:
                     print(f"🛑 PAUSING ALERTS: {consecutive_losses} consecutive losses detected")
                     print("   System will wait for market conditions to improve")
                     return
