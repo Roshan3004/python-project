@@ -127,19 +127,15 @@ jobs:
         echo "=========================================="
         echo "✅ Analysis completed successfully!"
 
-    - name: Resolve outcomes
+    - name: Resolve outcomes (adaptive short window)
       if: always()
       env:
         NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
+        RESOLVE_TIMEOUT_S: 40
+        RESOLVE_INTERVAL_S: 5
       run: |
-        echo "⏳ Waiting ~75s for next period to land in game_history..."
-        sleep 75
-        echo "🔄 Resolve pass 1"
-        python analyze.py --resolve_only || echo "⚠️ resolve_only step returned non-zero; continuing"
-        echo "⏳ Short wait before second pass..."
-        sleep 30
-        echo "🔄 Resolve pass 2"
-        python analyze.py --resolve_only || echo "⚠️ resolve_only step returned non-zero; continuing"
+        echo "🔄 Adaptive resolver: trying every ${RESOLVE_INTERVAL_S}s for ${RESOLVE_TIMEOUT_S}s"
+        python resolve_wait.py || echo "⚠️ resolve_wait returned non-zero; continuing"
         echo "✅ Outcome resolution step finished"
         
     - name: Upload updated model
