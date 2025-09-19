@@ -116,8 +116,12 @@ jobs:
         python analyze.py \
           --source db \
           --limit 2000 \
-          --preset "${{ github.event.inputs.preset || 'balanced' }}" \
-          --max_signals "${{ github.event.inputs.max_signals || '3' }}" \
+          --preset conservative \
+          --max_signals 3 \
+          --enable_recent_penalty \
+          --disable_size_alerts \
+          --min_prob_margin 0.25 \
+          --max_entropy 0.75 \
           --enable_alert \
           $FAST_FLAG $SLEEP_FLAG || {
           echo "❌ Analysis failed with exit code $?"
