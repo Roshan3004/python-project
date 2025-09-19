@@ -118,6 +118,7 @@ jobs:
           --limit 2000 \
           --preset "${{ github.event.inputs.preset || 'balanced' }}" \
           --max_signals "${{ github.event.inputs.max_signals || '3' }}" \
+          --enable_alert \
           $FAST_FLAG $SLEEP_FLAG || {
           echo "❌ Analysis failed with exit code $?"
           exit 1
@@ -125,6 +126,15 @@ jobs:
         
         echo "=========================================="
         echo "✅ Analysis completed successfully!"
+
+    - name: Resolve outcomes
+      if: always()
+      env:
+        NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
+      run: |
+        echo "🔄 Resolving unresolved prediction outcomes..."
+        python analyze.py --resolve_only || echo "⚠️ resolve_only step returned non-zero; continuing"
+        echo "✅ Outcome resolution step finished"
         
     - name: Upload updated model
       uses: actions/upload-artifact@v4

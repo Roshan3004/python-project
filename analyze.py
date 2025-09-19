@@ -1495,6 +1495,9 @@ def main():
         parser.add_argument("--fresh_seconds", type=int, default=None, help="Require newest row to be ≤ this many seconds old")
         parser.add_argument("--max_wait_seconds", type=int, default=None, help="Max seconds to retry for fresh data")
         parser.add_argument("--min_buffer_seconds", type=int, default=None, help="Override safety buffer before betting period")
+        # Resolution controls
+        parser.add_argument("--resolve_only", action="store_true", help="Resolve unresolved alerts and exit")
+        parser.add_argument("--skip_resolve", action="store_true", help="Skip outcome resolution step")
         args = parser.parse_args()
     except Exception as e:
         print(f"❌ Error parsing arguments: {e}")
@@ -1527,6 +1530,20 @@ def main():
         os.environ["WINGO_DISABLE_VIOLET_ALERTS"] = "1" if args.disable_violet_alerts else "0"
     except Exception:
         pass
+
+    # If only resolving, do it up-front and exit
+    if getattr(args, "resolve_only", False):
+        try:
+            cfg = ScraperConfig()
+            if not cfg.neon_conn_str:
+                print("❌ Error: Database connection string not found! Set NEON_CONN_STR")
+                return
+            print("🔄 resolve_only: Resolving pending alert outcomes...")
+            resolve_unresolved_alerts(cfg.neon_conn_str)
+            print("✅ resolve_only: Done")
+        except Exception as e:
+            print(f"❌ resolve_only failed: {e}")
+        return
 
     # Optional startup alignment sleep to allow the current period to finish
     if args.align_startup_sleep:
@@ -1602,12 +1619,19 @@ def main():
             print(f"🎯 Target betting period: {target_period}")
             print("=" * 50)
         
-        # Resolve any pending alert outcomes
-        if not args.fast_mode:
-            print("🔄 Resolving pending alert outcomes...")
-            resolve_unresolved_alerts(cfg.neon_conn_str)
+        # Resolve any pending alert outcomes (always attempt unless explicitly skipped)
+        if not args.skip_resolve:
+            try:
+                if args.fast_mode:
+                    print("🔄 Fast mode: quick outcome resolution (limited batch)...")
+                    resolve_unresolved_alerts(cfg.neon_conn_str, batch_limit=50)
+                else:
+                    print("🔄 Resolving pending alert outcomes...")
+                    resolve_unresolved_alerts(cfg.neon_conn_str)
+            except Exception as e:
+                print(f"⚠️  Outcome resolution step failed: {e}")
         else:
-            print("⏭️  Fast mode: skipping resolve_unresolved_alerts to save time")
+            print("⏭️  skip_resolve enabled: not resolving outcomes this run")
         
         if len(df) < 100:
             print("❌ Insufficient data for analysis (need at least 100 rounds)")
