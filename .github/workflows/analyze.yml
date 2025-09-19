@@ -61,6 +61,7 @@ jobs:
         NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        WINGO_DISABLE_DAILY_STOPLOSS: "1"   # today only
       run: |
         echo "🚀 Starting WinGo Analysis..."
         echo "📊 Configuration:"

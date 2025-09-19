@@ -1485,6 +1485,9 @@ def main():
         parser.add_argument("--disable_size_alerts", action="store_true", help="Disable size (BIG/SMALL) alerts to focus on color accuracy")
         # Disable specific alert types
         parser.add_argument("--disable_violet_alerts", action="store_true", help="Never send VIOLET color alerts")
+        # Risk controls
+        parser.add_argument("--disable_daily_stoploss", action="store_true", help="Disable daily stop-loss for this run (useful after upgrades)")
+        parser.add_argument("--daily_max_signals", type=int, default=int(os.getenv("DAILY_MAX_SIGNALS", "5")), help="Cap total alerts per UTC day")
         # New: tunable alert gates so we can adjust without code edits
         parser.add_argument("--eta_min_seconds", type=int, default=15, help="Minimum ETA seconds required to send alert")
         parser.add_argument("--violet_max_share", type=float, default=0.22, help="Maximum allowed recent VIOLET share (0-1) for alert")
@@ -1528,6 +1531,7 @@ def main():
         os.environ["WINGO_FAST_MODE"] = "1" if args.fast_mode else "0"
         os.environ["WINGO_CALIBRATION"] = args.calibration
         os.environ["WINGO_DISABLE_VIOLET_ALERTS"] = "1" if args.disable_violet_alerts else "0"
+        os.environ["WINGO_DISABLE_DAILY_STOPLOSS"] = "1" if args.disable_daily_stoploss else "0"
     except Exception:
         pass
 
@@ -1663,27 +1667,28 @@ def main():
                     print(f"📊 Building history: {total_alerts}/20 alerts needed for precision gating")
                     print("   Precision-based features temporarily disabled")
                 else:
-                    # Daily stop-loss check - stop after 2 losses in current day
-                    try:
-                        import psycopg2
-                        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-                        with psycopg2.connect(cfg.neon_conn_str) as conn:
-                            with conn.cursor() as cur:
-                                cur.execute("""
-                                    SELECT COUNT(*) FROM prediction_alerts 
-                                    WHERE outcome_color IS NOT NULL AND outcome_color != predicted_color 
-                                    AND created_at >= %s
-                                """, (today_start,))
-                                daily_losses = cur.fetchone()[0]
-                                
-                                if daily_losses >= 2:
-                                    print(f"🛑 DAILY STOP-LOSS: {daily_losses} losses today - no more signals until tomorrow")
-                                    return
-                                elif daily_losses >= 1:
-                                    print(f"⚠️  Daily loss warning: {daily_losses}/2 losses today - being extra cautious")
-                                    base_ml_threshold = min(0.90, base_ml_threshold + 0.03)
-                    except Exception:
-                        pass
+                    # Daily stop-loss check - stop after 2 losses in current day (can be disabled)
+                    if not args.disable_daily_stoploss and os.getenv("WINGO_DISABLE_DAILY_STOPLOSS", "0") != "1":
+                        try:
+                            import psycopg2
+                            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                            with psycopg2.connect(cfg.neon_conn_str) as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("""
+                                        SELECT COUNT(*) FROM prediction_alerts 
+                                        WHERE outcome_color IS NOT NULL AND outcome_color != predicted_color 
+                                        AND created_at >= %s
+                                    """, (today_start,))
+                                    daily_losses = cur.fetchone()[0]
+                                    
+                                    if daily_losses >= 2:
+                                        print(f"🛑 DAILY STOP-LOSS: {daily_losses} losses today - no more signals until tomorrow")
+                                        return
+                                    elif daily_losses >= 1:
+                                        print(f"⚠️  Daily loss warning: {daily_losses}/2 losses today - being extra cautious")
+                                        base_ml_threshold = min(0.90, base_ml_threshold + 0.03)
+                        except Exception:
+                            pass
                     
                     # Dynamic precision gate - suppress signals if recent performance is poor
                     if overall_precision < 0.55:
