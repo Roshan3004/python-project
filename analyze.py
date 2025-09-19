@@ -1749,6 +1749,13 @@ def main():
         signals = sorted(signals, key=lambda x: x["confidence"], reverse=True)[:max_signals]
         print(f"Limited to top {max_signals} signals by confidence")
     
+    # Persist signal count for downstream CI steps (e.g., resolver gating)
+    try:
+        with open("signals_generated.txt", "w", encoding="utf-8") as f:
+            f.write(str(len(signals)))
+    except Exception:
+        pass
+
     if not signals:
         if args.force_alert:
             print("⚠️  No signals passed gates, but --force_alert is set. Attempting to send top candidate if any...")

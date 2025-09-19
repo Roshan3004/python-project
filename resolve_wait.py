@@ -22,19 +22,27 @@ def main():
     try:
         with psycopg2.connect(cfg.neon_conn_str) as conn:
             with conn.cursor() as cur:
+                # Prefer recent unresolved count (last N minutes)
                 cur.execute(
                     """
                     SELECT COUNT(*)
                     FROM prediction_alerts
                     WHERE resolved_at IS NULL
-                      AND created_at >= NOW() - INTERVAL %s MINUTE
+                      AND created_at >= NOW() - make_interval(mins => %s)
                     """,
                     (lookback_min,)
                 )
                 (pending_recent,) = cur.fetchone()
                 if int(pending_recent or 0) == 0:
-                    print(f"resolve_wait: no recent unresolved alerts (last {lookback_min} min) — exiting")
-                    return
+                    # Double-check: if absolutely no unresolved rows at all, exit too
+                    cur.execute("SELECT COUNT(*) FROM prediction_alerts WHERE resolved_at IS NULL")
+                    (pending_any,) = cur.fetchone()
+                    if int(pending_any or 0) == 0:
+                        print("resolve_wait: no unresolved alerts — exiting")
+                        return
+                    else:
+                        print(f"resolve_wait: unresolved exist but none in last {lookback_min} min — exiting")
+                        return
     except Exception as e:
         print(f"resolve_wait: recent check failed: {e}")
 

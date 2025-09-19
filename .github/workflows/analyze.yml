@@ -134,6 +134,18 @@ jobs:
         RESOLVE_TIMEOUT_S: 40
         RESOLVE_INTERVAL_S: 5
       run: |
+        # Skip resolution entirely if no signals were generated this run
+        if [ -f signals_generated.txt ]; then
+          COUNT=$(cat signals_generated.txt || echo 0)
+        else
+          COUNT=0
+        fi
+        echo "Signals generated in this run: ${COUNT}"
+        if [ "$COUNT" -eq 0 ]; then
+          echo "No signals generated — skipping resolver step"
+          exit 0
+        fi
+
         echo "🔄 Adaptive resolver: trying every ${RESOLVE_INTERVAL_S}s for ${RESOLVE_TIMEOUT_S}s"
         python resolve_wait.py || echo "⚠️ resolve_wait returned non-zero; continuing"
         echo "✅ Outcome resolution step finished"
