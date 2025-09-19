@@ -132,7 +132,13 @@ jobs:
       env:
         NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
       run: |
-        echo "🔄 Resolving unresolved prediction outcomes..."
+        echo "⏳ Waiting ~75s for next period to land in game_history..."
+        sleep 75
+        echo "🔄 Resolve pass 1"
+        python analyze.py --resolve_only || echo "⚠️ resolve_only step returned non-zero; continuing"
+        echo "⏳ Short wait before second pass..."
+        sleep 30
+        echo "🔄 Resolve pass 2"
         python analyze.py --resolve_only || echo "⚠️ resolve_only step returned non-zero; continuing"
         echo "✅ Outcome resolution step finished"
         
