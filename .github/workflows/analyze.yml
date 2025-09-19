@@ -61,7 +61,7 @@ jobs:
         NEON_CONN_STR: ${{ secrets.NEON_CONN_STR }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        WINGO_DISABLE_DAILY_STOPLOSS: "1"   # today only
+        WINGO_DISABLE_DAILY_STOPLOSS: "1"  # TEMP: bypass daily stop-loss after upgrade
       run: |
         echo "🚀 Starting WinGo Analysis..."
         echo "📊 Configuration:"
@@ -123,6 +123,7 @@ jobs:
           --disable_size_alerts \
           --min_prob_margin 0.25 \
           --max_entropy 0.75 \
+          --disable_daily_stoploss \
           --enable_alert \
           $FAST_FLAG $SLEEP_FLAG || {
           echo "❌ Analysis failed with exit code $?"
