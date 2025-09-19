@@ -470,19 +470,65 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                 print(f"📋 Found {len(unresolved)} unresolved alerts to process")
                 
                 for alert_id, anchor_period, predicted_color, predicted_number in unresolved:
+                    print(f"🔍 Processing alert {alert_id} for anchor period {anchor_period}")
+                    
                     # The prediction was made FOR the next period after anchor_period
+                    # Handle different period ID formats more robustly
                     try:
-                        target_period_id = str(int(anchor_period) + 1)
-                    except:
+                        # Try to parse as integer first (for numeric period IDs)
+                        if anchor_period.isdigit():
+                            target_period_id = str(int(anchor_period) + 1)
+                        else:
+                            # For non-numeric period IDs, try to find the next period by timestamp
+                            # This is a fallback - you may need to adjust based on your period ID format
+                            print(f"⚠️  Non-numeric period ID: {anchor_period} - using timestamp-based lookup")
+                            
+                            # Get the timestamp of the anchor period
+                            cur.execute(
+                                """
+                                SELECT scraped_at FROM game_history 
+                                WHERE period_id = %s 
+                                ORDER BY scraped_at DESC LIMIT 1
+                                """,
+                                (anchor_period,)
+                            )
+                            anchor_result = cur.fetchone()
+                            
+                            if not anchor_result:
+                                print(f"❌ Could not find anchor period {anchor_period} in game_history")
+                                continue
+                                
+                            anchor_timestamp = anchor_result[0]
+                            
+                            # Find the next period by looking for the next timestamp
+                            cur.execute(
+                                """
+                                SELECT period_id FROM game_history 
+                                WHERE scraped_at > %s 
+                                ORDER BY scraped_at ASC 
+                                LIMIT 1
+                                """,
+                                (anchor_timestamp,)
+                            )
+                            next_result = cur.fetchone()
+                            
+                            if not next_result:
+                                print(f"⏳ No next period found after {anchor_period}")
+                                continue
+                                
+                            target_period_id = next_result[0]
+                            
+                    except Exception as e:
+                        print(f"❌ Error processing period ID {anchor_period}: {e}")
                         continue
                     
                     # Get the actual outcome for the target period
                     cur.execute(
                         """
-                            SELECT number, color
-                            FROM game_history
+                        SELECT number, color
+                        FROM game_history
                         WHERE period_id = %s
-                            LIMIT 1
+                        LIMIT 1
                         """,
                         (target_period_id,)
                     )
@@ -491,12 +537,19 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                     
                     outcome = cur.fetchone()
                     if outcome:
-                        outcome_number, outcome_color = outcome
+                        outcome_number_str, outcome_color = outcome
+                        
+                        # Convert number to integer for comparison
+                        try:
+                            outcome_number = int(outcome_number_str) if outcome_number_str else None
+                        except (ValueError, TypeError):
+                            outcome_number = None
+                            
                         print(f"✅ Found outcome for period {target_period_id}: {outcome_color} {outcome_number}")
                         
                         # Determine if prediction was correct
                         hit_color = (predicted_color == outcome_color)
-                        hit_number = (predicted_number == outcome_number) if predicted_number is not None else None
+                        hit_number = (predicted_number == outcome_number) if (predicted_number is not None and outcome_number is not None) else None
                         
                         print(f"📊 Prediction: {predicted_color} vs Actual: {outcome_color} → {'✅ HIT' if hit_color else '❌ MISS'}")
                         
@@ -521,6 +574,8 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
             print(f"✅ Outcome resolution completed successfully")
     except Exception as e:
         print(f"⚠️  Outcome resolution failed: {e}")
+        import traceback
+        traceback.print_exc()
         pass
 
 def color_from_number(n: int) -> str:
