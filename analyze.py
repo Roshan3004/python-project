@@ -470,13 +470,13 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                 print(f"📋 Found {len(unresolved)} unresolved alerts to process")
                 
                 for alert_id, anchor_period, predicted_color, predicted_number in unresolved:
-                    # Find the NEXT period after anchor_period
+                    # The prediction was made FOR the next period after anchor_period
                     try:
-                        next_period_id = str(int(anchor_period) + 1)
+                        target_period_id = str(int(anchor_period) + 1)
                     except:
                         continue
                     
-                    # Get the actual outcome for that period
+                    # Get the actual outcome for the target period
                     cur.execute(
                         """
                             SELECT number, color
@@ -484,16 +484,21 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                         WHERE period_id = %s
                             LIMIT 1
                         """,
-                        (next_period_id,)
+                        (target_period_id,)
                     )
+                    
+                    print(f"🔍 Checking period {target_period_id} for prediction {alert_id} (anchor: {anchor_period})")
                     
                     outcome = cur.fetchone()
                     if outcome:
                         outcome_number, outcome_color = outcome
+                        print(f"✅ Found outcome for period {target_period_id}: {outcome_color} {outcome_number}")
                         
                         # Determine if prediction was correct
                         hit_color = (predicted_color == outcome_color)
                         hit_number = (predicted_number == outcome_number) if predicted_number is not None else None
+                        
+                        print(f"📊 Prediction: {predicted_color} vs Actual: {outcome_color} → {'✅ HIT' if hit_color else '❌ MISS'}")
                         
                         # Update the alert with outcome
                         cur.execute(
@@ -508,6 +513,9 @@ def resolve_unresolved_alerts(conn_str: str, batch_limit: int = 200) -> None:
                             """,
                             (outcome_number, outcome_color, hit_color, hit_number, alert_id)
                         )
+                        print(f"💾 Updated prediction {alert_id} with outcome")
+                    else:
+                        print(f"⏳ No outcome yet for period {target_period_id} (prediction {alert_id})")
                 
             conn.commit()
             print(f"✅ Outcome resolution completed successfully")
