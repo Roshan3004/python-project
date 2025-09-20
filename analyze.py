@@ -1075,11 +1075,12 @@ def get_recent_precision(conn_str: str, lookback_count: int = 50) -> Dict[str, f
         import psycopg2
         with psycopg2.connect(conn_str) as conn:
             with conn.cursor() as cur:
-                # Get recent resolved alerts
+                # Get recent resolved alerts (last 7 days only to avoid old bad data)
                 cur.execute("""
                     SELECT (outcome_color = predicted_color) as hit, predicted_color
                     FROM prediction_alerts 
                     WHERE outcome_color IS NOT NULL
+                      AND created_at >= NOW() - INTERVAL '7 days'
                     ORDER BY created_at DESC
                     LIMIT %s
                 """, (lookback_count,))
@@ -1087,7 +1088,15 @@ def get_recent_precision(conn_str: str, lookback_count: int = 50) -> Dict[str, f
                 results = cur.fetchall()
                 
                 if len(results) < 10:  # Need minimum data
+                    # If very few recent alerts, assume neutral precision to allow fresh start
                     return {"overall_precision": 0.5, "red_precision": 0.5, "green_precision": 0.5, "total_alerts": len(results)}
+                
+                # If we have very few alerts in last 7 days, use a more generous precision
+                if len(results) < 20:
+                    # Use a weighted average: 70% neutral + 30% actual performance
+                    actual_precision = sum(1 for hit, _ in results if hit) / len(results)
+                    weighted_precision = 0.7 * 0.5 + 0.3 * actual_precision
+                    return {"overall_precision": weighted_precision, "red_precision": 0.5, "green_precision": 0.5, "total_alerts": len(results)}
                 
                 # Calculate overall precision
                 hits = sum(1 for hit, _ in results if hit)
@@ -1217,8 +1226,8 @@ def detect_strong_signals(df: pd.DataFrame,
     max_ml_confidence = max(ml_probs.values())
     print(f"🤖 ML analysis: max={max_ml_confidence:.3f} (threshold: {ml_threshold:.3f})")
     
-    # Lower threshold for ML signals to generate more alerts
-    ml_alert_threshold = max(0.60, ml_threshold - 0.05)  # tighter: allow at most -0.05
+    # Use exact threshold for ML signals (no reduction for quality)
+    ml_alert_threshold = ml_threshold  # No reduction - use exact threshold
     
     # Probability margin and entropy gates
     def probs_entropy(p: Dict[str, float]) -> float:
@@ -1691,11 +1700,11 @@ def main():
                             pass
                     
                     # Dynamic precision gate - suppress signals if recent performance is poor
-                    if overall_precision < 0.55:
-                        print(f"🚫 SUPPRESSING SIGNALS: Recent precision {overall_precision:.1%} < 55%")
+                    if overall_precision < 0.45:  # Raised to 45% for better signal quality
+                        print(f"🚫 SUPPRESSING SIGNALS: Recent precision {overall_precision:.1%} < 45%")
                         print("   Reason: System accuracy too low - waiting for better conditions")
                         return
-                    elif overall_precision < 0.65:
+                    elif overall_precision < 0.55:  # Raised to 55%
                         print(f"⚠️  LOW PRECISION WARNING: {overall_precision:.1%} - applying stricter gates")
                         print(f"   Reason: Recent performance below target - increasing thresholds")
                         # Increase thresholds for poor performance

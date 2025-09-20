@@ -121,8 +121,8 @@ jobs:
           --max_signals 3 \
           --enable_recent_penalty \
           --disable_size_alerts \
-          --min_prob_margin 0.25 \
-          --max_entropy 0.75 \
+          --min_prob_margin 0.30 \
+          --max_entropy 0.70 \
           --disable_daily_stoploss \
           --enable_alert \
           $FAST_FLAG $SLEEP_FLAG || {
