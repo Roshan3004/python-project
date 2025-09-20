@@ -1075,12 +1075,12 @@ def get_recent_precision(conn_str: str, lookback_count: int = 50) -> Dict[str, f
         import psycopg2
         with psycopg2.connect(conn_str) as conn:
             with conn.cursor() as cur:
-                # Get recent resolved alerts (last 3 days only for fresh start after upgrades)
+                # Get recent resolved alerts (last 1 day only for fresh start after upgrades)
                 cur.execute("""
                     SELECT (outcome_color = predicted_color) as hit, predicted_color
                     FROM prediction_alerts 
                     WHERE outcome_color IS NOT NULL
-                      AND created_at >= NOW() - INTERVAL '3 days'
+                      AND created_at >= NOW() - INTERVAL '1 day'
                     ORDER BY created_at DESC
                     LIMIT %s
                 """, (lookback_count,))
@@ -1102,7 +1102,7 @@ def get_recent_precision(conn_str: str, lookback_count: int = 50) -> Dict[str, f
                 # Calculate overall precision
                 hits = sum(1 for hit, _ in results if hit)
                 overall_precision = hits / len(results)
-                print(f"📊 Precision calculation: {hits}/{len(results)} hits = {overall_precision:.1%} (last 3 days)")
+                print(f"📊 Precision calculation: {hits}/{len(results)} hits = {overall_precision:.1%} (last 1 day)")
                 
                 # Calculate per-color precision
                 red_hits = sum(1 for hit, color in results if hit and color == "RED")
