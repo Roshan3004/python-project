@@ -1091,18 +1091,18 @@ def get_recent_precision(conn_str: str, lookback_count: int = 50) -> Dict[str, f
                     # If very few recent alerts, assume neutral precision to allow fresh start
                     return {"overall_precision": 0.5, "red_precision": 0.5, "green_precision": 0.5, "total_alerts": len(results)}
                 
-                # If we have very few alerts in last 7 days, use a more generous precision
-                if len(results) < 20:
-                    # Use a weighted average: 80% neutral + 20% actual performance for fresh start
+                # If we have very few alerts in last 3 days, use a more generous precision
+                if len(results) < 30:  # Raised threshold for fresh start
+                    # Use a weighted average: 90% neutral + 10% actual performance for fresh start
                     actual_precision = sum(1 for hit, _ in results if hit) / len(results)
-                    weighted_precision = 0.8 * 0.5 + 0.2 * actual_precision
+                    weighted_precision = 0.9 * 0.5 + 0.1 * actual_precision
                     print(f"📊 Fresh start precision: {len(results)} alerts → weighted {weighted_precision:.1%} (actual: {actual_precision:.1%})")
                     return {"overall_precision": weighted_precision, "red_precision": 0.5, "green_precision": 0.5, "total_alerts": len(results)}
                 
                 # Calculate overall precision
                 hits = sum(1 for hit, _ in results if hit)
                 overall_precision = hits / len(results)
-                print(f"📊 Precision calculation: {hits}/{len(results)} hits = {overall_precision:.1%} (last 7 days)")
+                print(f"📊 Precision calculation: {hits}/{len(results)} hits = {overall_precision:.1%} (last 3 days)")
                 
                 # Calculate per-color precision
                 red_hits = sum(1 for hit, color in results if hit and color == "RED")
