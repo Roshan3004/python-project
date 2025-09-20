@@ -1685,18 +1685,30 @@ def main():
                             today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
                             with psycopg2.connect(cfg.neon_conn_str) as conn:
                                 with conn.cursor() as cur:
+                                    # Check for consecutive losses (not total losses)
                                     cur.execute("""
-                                        SELECT COUNT(*) FROM prediction_alerts 
-                                        WHERE outcome_color IS NOT NULL AND outcome_color != predicted_color 
+                                        SELECT predicted_color, outcome_color, created_at
+                                        FROM prediction_alerts 
+                                        WHERE outcome_color IS NOT NULL 
                                         AND created_at >= %s
+                                        ORDER BY created_at DESC
+                                        LIMIT 10
                                     """, (today_start,))
-                                    daily_losses = cur.fetchone()[0]
+                                    recent_alerts = cur.fetchall()
                                     
-                                    if daily_losses >= 2:
-                                        print(f"🛑 DAILY STOP-LOSS: {daily_losses} losses today - no more signals until tomorrow")
+                                    # Count consecutive losses from most recent
+                                    consecutive_losses = 0
+                                    for predicted_color, outcome_color, created_at in recent_alerts:
+                                        if predicted_color != outcome_color:  # Loss
+                                            consecutive_losses += 1
+                                        else:  # Win - break the streak
+                                            break
+                                    
+                                    if consecutive_losses >= 2:
+                                        print(f"🛑 DAILY STOP-LOSS: {consecutive_losses} consecutive losses - no more signals until tomorrow")
                                         return
-                                    elif daily_losses >= 1:
-                                        print(f"⚠️  Daily loss warning: {daily_losses}/2 losses today - being extra cautious")
+                                    elif consecutive_losses >= 1:
+                                        print(f"⚠️  Consecutive loss warning: {consecutive_losses}/2 consecutive losses - being extra cautious")
                                         base_ml_threshold = min(0.90, base_ml_threshold + 0.03)
                         except Exception:
                             pass
