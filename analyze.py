@@ -1696,11 +1696,14 @@ def main():
                                     """, (today_start,))
                                     recent_alerts = cur.fetchall()
                                     
-                                    # Count consecutive losses from most recent
+                                    # Count consecutive losses from most recent (excluding VIOLET outcomes)
                                     consecutive_losses = 0
                                     for predicted_color, outcome_color, created_at in recent_alerts:
                                         if predicted_color != outcome_color:  # Loss
-                                            consecutive_losses += 1
+                                            # Only count losses when outcome is RED or GREEN (exclude VIOLET)
+                                            if outcome_color in ['RED', 'GREEN']:
+                                                consecutive_losses += 1
+                                            # VIOLET losses are ignored for daily stop-loss
                                         else:  # Win - break the streak
                                             break
                                     
