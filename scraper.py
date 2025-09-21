@@ -18,8 +18,22 @@ except ImportError:
     class TimeoutException(Exception):
         pass
 from config import ScraperConfig
-import psycopg2
 import requests
+import os
+
+# Try to import database modules
+try:
+    import psycopg2
+    HAS_POSTGRES = True
+except ImportError:
+    HAS_POSTGRES = False
+    logger.warning("psycopg2 not available, using SQLite fallback")
+
+try:
+    from db_sqlite import save_to_sqlite, get_total_rows_sqlite, get_db_last_seen_sqlite
+    HAS_SQLITE = True
+except ImportError:
+    HAS_SQLITE = False
 
 # Configure logging with UTF-8 encoding
 logging.basicConfig(
@@ -1050,76 +1064,85 @@ def scrape_page(driver, url, cfg):
         return []
 
 def save_to_neon(records, conn_str):
-    """Save records to Neon PostgreSQL"""
+    """Save records to database (PostgreSQL or SQLite fallback)"""
     if not records:
         return 0
-        
-    conn = None
-    try:
-        conn = psycopg2.connect(conn_str)
-        cursor = conn.cursor()
-        
-        # Create table if not exists
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS game_history (
-                period_id VARCHAR(50) PRIMARY KEY,
-                number VARCHAR(10),
-                color VARCHAR(10),
-                scraped_at TIMESTAMP
-            )
-        """)
-        
-        # Insert records
-        inserted = 0
-        for record in records:
+    
+    # Try PostgreSQL first if available
+    if HAS_POSTGRES and conn_str:
+        try:
+            conn = psycopg2.connect(conn_str)
+            cursor = conn.cursor()
+            
+            # Create table if not exists
             cursor.execute("""
-                INSERT INTO game_history (period_id, number, color, scraped_at)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (period_id) DO NOTHING
-            """, (
-                record['period_id'],
-                record['number'],
-                record['color'],
-                record['scraped_at']
-            ))
-            try:
-                # For INSERT ... DO NOTHING, rowcount is 1 if inserted, 0 if skipped
-                inserted += max(0, cursor.rowcount or 0)
-            except Exception:
-                pass
-        
-        conn.commit()
-        return inserted
-    except Exception as e:
-        logger.error(f"Database error: {e}")
-        return 0
-    finally:
-        if conn:
+                CREATE TABLE IF NOT EXISTS game_history (
+                    period_id VARCHAR(50) PRIMARY KEY,
+                    number VARCHAR(10),
+                    color VARCHAR(10),
+                    scraped_at TIMESTAMP
+                )
+            """)
+            
+            # Insert records
+            inserted = 0
+            for record in records:
+                cursor.execute("""
+                    INSERT INTO game_history (period_id, number, color, scraped_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (period_id) DO NOTHING
+                """, (
+                    record['period_id'],
+                    record['number'],
+                    record['color'],
+                    record['scraped_at']
+                ))
+                try:
+                    # For INSERT ... DO NOTHING, rowcount is 1 if inserted, 0 if skipped
+                    inserted += max(0, cursor.rowcount or 0)
+                except Exception:
+                    pass
+            
+            conn.commit()
             conn.close()
+            return inserted
+        except Exception as e:
+            logger.warning(f"PostgreSQL failed, falling back to SQLite: {e}")
+    
+    # Fallback to SQLite
+    if HAS_SQLITE:
+        return save_to_sqlite(records)
+    
+    logger.error("No database available")
+    return 0
 
 def get_total_rows(conn_str) -> int:
     """Return total rows in game_history."""
-    conn = None
-    try:
-        conn = psycopg2.connect(conn_str)
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS game_history (
-                period_id VARCHAR(50) PRIMARY KEY,
-                number VARCHAR(10),
-                color VARCHAR(10),
-                scraped_at TIMESTAMP
-            )
-        """)
-        cur.execute("SELECT COUNT(*) FROM game_history")
-        (count,) = cur.fetchone()
-        return int(count or 0)
-    except Exception as e:
-        logger.warning(f"Total rows check failed: {e}")
-        return 0
-    finally:
-        if conn:
+    # Try PostgreSQL first if available
+    if HAS_POSTGRES and conn_str:
+        try:
+            conn = psycopg2.connect(conn_str)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS game_history (
+                    period_id VARCHAR(50) PRIMARY KEY,
+                    number VARCHAR(10),
+                    color VARCHAR(10),
+                    scraped_at TIMESTAMP
+                )
+            """)
+            cur.execute("SELECT COUNT(*) FROM game_history")
+            (count,) = cur.fetchone()
             conn.close()
+            return int(count or 0)
+        except Exception as e:
+            logger.warning(f"PostgreSQL total rows check failed: {e}")
+    
+    # Fallback to SQLite
+    if HAS_SQLITE:
+        return get_total_rows_sqlite()
+    
+    return 0
 
 def _normalize_color_from_api(color_str: str, number: int) -> str:
     """Normalize color coming from API, fallback to number rule."""
@@ -1257,26 +1280,33 @@ def fetch_history_page(cfg: ScraperConfig, page_no: int):
 
 def get_db_last_seen(conn_str: str) -> str | None:
     """Return the max period_id from DB, or None if table empty/not exists."""
-    try:
-        conn = psycopg2.connect(conn_str)
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS game_history (
-                period_id VARCHAR(50) PRIMARY KEY,
-                number VARCHAR(10),
-                color VARCHAR(10),
-                scraped_at TIMESTAMP
-            )
-        """)
-        conn.commit()
-        cur.execute("SELECT MAX(period_id) FROM game_history")
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        return row[0] if row and row[0] else None
-    except Exception as e:
-        logger.warning(f"Could not read last_seen from DB: {e}")
-        return None
+    # Try PostgreSQL first if available
+    if HAS_POSTGRES and conn_str:
+        try:
+            conn = psycopg2.connect(conn_str)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS game_history (
+                    period_id VARCHAR(50) PRIMARY KEY,
+                    number VARCHAR(10),
+                    color VARCHAR(10),
+                    scraped_at TIMESTAMP
+                )
+            """)
+            conn.commit()
+            cur.execute("SELECT MAX(period_id) FROM game_history")
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            return row[0] if row and row[0] else None
+        except Exception as e:
+            logger.warning(f"Could not read last_seen from PostgreSQL: {e}")
+    
+    # Fallback to SQLite
+    if HAS_SQLITE:
+        return get_db_last_seen_sqlite()
+    
+    return None
 
 def backfill_from_history(cfg: ScraperConfig, last_seen: str | None, max_pages: int = 50) -> int:
     """Backfill older pages until we reach last_seen or hit max_pages. Returns inserted count."""
