@@ -1365,9 +1365,9 @@ def api_poll_loop(cfg: ScraperConfig):
     last_insert_ts = time.time()
     alert_sent = False
 
-    # Timing control with fixed latency
-    TARGET_LATENCY = 0.15  # 150ms target latency after the second
-    MAX_LATENCY = 0.2      # If we're later than this, resync to next interval
+    # Timing control with fixed latency (optimized for speed)
+    TARGET_LATENCY = 0.05  # 50ms target latency after the second
+    MAX_LATENCY = 0.1      # If we're later than this, resync to next interval
     
     # Initialize timing
     base_time = time.time()
