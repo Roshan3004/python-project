@@ -21,6 +21,17 @@ from config import ScraperConfig
 import requests
 import os
 
+# Configure logging with UTF-8 encoding FIRST
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("scraper.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 # Try to import database modules
 try:
     import psycopg2
@@ -34,17 +45,6 @@ try:
     HAS_SQLITE = True
 except ImportError:
     HAS_SQLITE = False
-
-# Configure logging with UTF-8 encoding
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("scraper.log", encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
 
 def setup_driver(cfg):
     """Setup Chrome driver with minimal stable options"""
