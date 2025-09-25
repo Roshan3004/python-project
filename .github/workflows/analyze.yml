@@ -90,9 +90,9 @@ jobs:
         echo "=========================================="
         echo "⏳ Calculating dynamic wait to align with next period close..."
         NOW_TS=$(date +%s)
-        # Compute target epoch = next minute boundary + 11 seconds
+        # Compute target epoch = next minute boundary + 5 seconds
         NEXT_MIN=$(( ( (NOW_TS / 60) + 1 ) * 60 ))
-        TARGET_TS=$(( NEXT_MIN + 11 ))
+        TARGET_TS=$(( NEXT_MIN + 5 ))
         SLEEP_SECS=$(( TARGET_TS - NOW_TS ))
         if [ $SLEEP_SECS -gt 0 ]; then
           echo "🕒 Current: $(date -u +%H:%M:%S) UTC"
