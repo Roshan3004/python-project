@@ -123,6 +123,7 @@ jobs:
           --min_prob_margin 0.30 \
           --max_entropy 0.70 \
           --enable_alert \
+          --disable_daily_stoploss \
           $FAST_FLAG $SLEEP_FLAG || {
           echo "❌ Analysis failed with exit code $?"
           exit 1
